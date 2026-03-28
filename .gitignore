@@ -1,0 +1,16 @@
+# Windows
+Thumbs.db
+Desktop.ini
+
+# Editor
+.vscode/
+.idea/
+
+# Python
+__pycache__/
+*.pyc
+
+# Local exports
+*.mp4
+plugin_showcase_samples/
+plugin_showcase_output_samples/

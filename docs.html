@@ -1,0 +1,658 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Detailed Model Maker Documentation</title>
+  <style>
+    :root {
+      --bg: #0d1117;
+      --panel: #161b22;
+      --panel-soft: #1f2630;
+      --border: #30363d;
+      --text: #e6edf3;
+      --muted: #9da7b3;
+      --accent: #58a6ff;
+      --green: #3fb950;
+      --gold: #d29922;
+      --red: #f85149;
+      --purple: #a371f7;
+      --teal: #39c5cf;
+      --shadow: 0 20px 60px rgba(0, 0, 0, 0.35);
+      --radius: 16px;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html {
+      scroll-behavior: smooth;
+    }
+
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+      background:
+        radial-gradient(circle at top right, rgba(88, 166, 255, 0.12), transparent 24%),
+        radial-gradient(circle at top left, rgba(163, 113, 247, 0.08), transparent 20%),
+        var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+    }
+
+    a {
+      color: var(--accent);
+      text-decoration: none;
+    }
+
+    a:hover {
+      text-decoration: underline;
+    }
+
+    code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+      background: rgba(110, 118, 129, 0.16);
+      border: 1px solid rgba(240, 246, 252, 0.08);
+      border-radius: 6px;
+      padding: 0.12rem 0.38rem;
+      font-size: 0.95em;
+    }
+
+    pre {
+      background: #0b0f14;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1rem 1.1rem;
+      overflow: auto;
+      box-shadow: var(--shadow);
+    }
+
+    pre code {
+      background: none;
+      border: 0;
+      padding: 0;
+    }
+
+    .layout {
+      max-width: 1280px;
+      margin: 0 auto;
+      padding: 32px 20px 80px;
+      display: grid;
+      grid-template-columns: 280px minmax(0, 1fr);
+      gap: 28px;
+    }
+
+    .sidebar {
+      position: sticky;
+      top: 20px;
+      align-self: start;
+      background: rgba(22, 27, 34, 0.9);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 18px;
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(10px);
+    }
+
+    .sidebar h3 {
+      margin: 0 0 10px;
+      font-size: 0.95rem;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    .sidebar ul {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+    }
+
+    .sidebar li + li {
+      margin-top: 8px;
+    }
+
+    .sidebar a {
+      display: block;
+      padding: 8px 10px;
+      color: var(--text);
+      border-radius: 10px;
+    }
+
+    .sidebar a:hover {
+      background: rgba(88, 166, 255, 0.12);
+      text-decoration: none;
+    }
+
+    .content {
+      min-width: 0;
+    }
+
+    .hero {
+      background: linear-gradient(135deg, rgba(88, 166, 255, 0.18), rgba(57, 197, 207, 0.08) 55%, rgba(163, 113, 247, 0.12));
+      border: 1px solid rgba(88, 166, 255, 0.32);
+      border-radius: 24px;
+      padding: 32px;
+      margin-bottom: 24px;
+      box-shadow: var(--shadow);
+    }
+
+    .eyebrow {
+      display: inline-block;
+      margin-bottom: 10px;
+      padding: 6px 10px;
+      border-radius: 999px;
+      background: rgba(88, 166, 255, 0.14);
+      border: 1px solid rgba(88, 166, 255, 0.3);
+      color: #c8e1ff;
+      font-size: 0.85rem;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+
+    h1 {
+      margin: 0 0 12px;
+      font-size: clamp(2.2rem, 4vw, 3.4rem);
+      line-height: 1.08;
+    }
+
+    .hero p {
+      margin: 0;
+      color: #c8d1dc;
+      max-width: 920px;
+      font-size: 1.08rem;
+    }
+
+    .meta,
+    .quick-grid,
+    .feature-grid,
+    .workflow,
+    .two-col {
+      display: grid;
+      gap: 16px;
+    }
+
+    .meta {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      margin: 18px 0 0;
+    }
+
+    .card,
+    .mini,
+    .callout,
+    .timeline-step {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+    }
+
+    .mini,
+    .card,
+    .timeline-step,
+    .callout {
+      padding: 18px;
+    }
+
+    .mini h4,
+    .card h3,
+    .timeline-step h4,
+    .callout h4 {
+      margin: 0 0 8px;
+    }
+
+    .mini p,
+    .card p,
+    .timeline-step p,
+    .callout p {
+      margin: 0;
+      color: var(--muted);
+    }
+
+    .quick-grid {
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      margin: 24px 0;
+    }
+
+    .feature-grid {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .workflow {
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+    }
+
+    .timeline-step {
+      position: relative;
+      overflow: hidden;
+    }
+
+    .timeline-step::before {
+      content: "";
+      position: absolute;
+      inset: 0 auto 0 0;
+      width: 5px;
+      background: linear-gradient(180deg, var(--accent), rgba(88, 166, 255, 0.1));
+    }
+
+    .badge {
+      display: inline-block;
+      margin-bottom: 10px;
+      padding: 4px 10px;
+      border-radius: 999px;
+      font-size: 0.78rem;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      border: 1px solid transparent;
+    }
+
+    .blue { background: rgba(88, 166, 255, 0.16); color: #c8e1ff; border-color: rgba(88, 166, 255, 0.28); }
+    .green { background: rgba(63, 185, 80, 0.16); color: #b7f0c0; border-color: rgba(63, 185, 80, 0.28); }
+    .gold { background: rgba(210, 153, 34, 0.16); color: #f3d48a; border-color: rgba(210, 153, 34, 0.28); }
+    .purple { background: rgba(163, 113, 247, 0.16); color: #d8c0ff; border-color: rgba(163, 113, 247, 0.28); }
+    .red { background: rgba(248, 81, 73, 0.16); color: #ffb4af; border-color: rgba(248, 81, 73, 0.28); }
+    .teal { background: rgba(57, 197, 207, 0.16); color: #b2eef2; border-color: rgba(57, 197, 207, 0.28); }
+
+    section {
+      margin-top: 26px;
+    }
+
+    section > h2 {
+      margin: 0 0 12px;
+      font-size: 1.7rem;
+    }
+
+    section > p.lead {
+      margin: 0 0 16px;
+      color: var(--muted);
+    }
+
+    .two-col {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .callout.warning {
+      border-color: rgba(248, 81, 73, 0.32);
+      background: linear-gradient(180deg, rgba(248, 81, 73, 0.08), rgba(22, 27, 34, 1));
+    }
+
+    .callout.note {
+      border-color: rgba(210, 153, 34, 0.32);
+      background: linear-gradient(180deg, rgba(210, 153, 34, 0.08), rgba(22, 27, 34, 1));
+    }
+
+    ul {
+      margin: 10px 0 0 20px;
+      color: var(--muted);
+    }
+
+    li + li {
+      margin-top: 6px;
+    }
+
+    .footer {
+      margin-top: 32px;
+      padding-top: 18px;
+      border-top: 1px solid var(--border);
+      color: var(--muted);
+      font-size: 0.95rem;
+    }
+
+    @media (max-width: 1040px) {
+      .layout {
+        grid-template-columns: 1fr;
+      }
+
+      .sidebar {
+        position: static;
+      }
+
+      .workflow,
+      .quick-grid,
+      .feature-grid,
+      .meta,
+      .two-col {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="layout">
+    <aside class="sidebar">
+      <h3>On This Page</h3>
+      <ul>
+        <li><a href="#overview">Overview</a></li>
+        <li><a href="#objectives">Objectives</a></li>
+        <li><a href="#workflow">Workflow</a></li>
+        <li><a href="#features">Feature Surface</a></li>
+        <li><a href="#storage">Storage Pipeline</a></li>
+        <li><a href="#preview">Preview System</a></li>
+        <li><a href="#theming">Theming</a></li>
+        <li><a href="#experimental">Experimental Controls</a></li>
+        <li><a href="#important">Important Collision Note</a></li>
+        <li><a href="#structure">Plugin Structure</a></li>
+      </ul>
+    </aside>
+
+    <main class="content">
+      <header class="hero">
+        <div class="eyebrow">GitHub-Style Documentation</div>
+        <h1>Detailed Model Maker</h1>
+        <p>
+          <strong>Detailed Model Maker</strong> is a Roblox Studio plugin for prompt-driven 3D model generation with built-in previewing, collision workflows,
+          storage handoff, UI theming, and an in-plugin guidebook. Its job is to give creators a single panel where they can define a request, inspect the result,
+          adjust runtime-readiness, and move generated assets into the correct play-mode storage flow.
+        </p>
+
+        <div class="meta">
+          <div class="mini">
+            <h4>Primary Use</h4>
+            <p>Generate and iterate on detailed Roblox models from text prompts inside Studio.</p>
+          </div>
+          <div class="mini">
+            <h4>Core File</h4>
+            <p><code>C:\Users\ZeroManYT\AppData\Local\Roblox\Plugins\DetailedModelMaker.lua</code></p>
+          </div>
+          <div class="mini">
+            <h4>Plugin Scope</h4>
+            <p>UI theme system, preview viewport, storage pipeline, guidebook, collision tuning, and runtime preparation.</p>
+          </div>
+        </div>
+      </header>
+
+      <section id="overview">
+        <h2>Overview</h2>
+        <p class="lead">
+          This plugin is built around a simple but practical premise: <em>text prompt in, reviewable Roblox model out</em>. Instead of treating generation as a
+          one-shot action, the plugin treats it as a pipeline. You define the request, preview it, inspect collision assumptions, and then deliberately decide what
+          should be stored for play-mode regeneration.
+        </p>
+
+        <div class="quick-grid">
+          <div class="card">
+            <span class="badge blue">Prompt Driven</span>
+            <h3>Text-to-Model Workflow</h3>
+            <p>Prompts, seeds, style bias, and schema settings shape the generation request directly from Studio.</p>
+          </div>
+          <div class="card">
+            <span class="badge green">Preview First</span>
+            <h3>Validation Before Commit</h3>
+            <p>Generated previews can be inspected in a dedicated viewport with view, lighting, and collision display controls.</p>
+          </div>
+          <div class="card">
+            <span class="badge purple">Studio Native</span>
+            <h3>Integrated Tooling</h3>
+            <p>Settings, guidebook, preview widget, theme selector, and storage actions all live as Studio dock widgets.</p>
+          </div>
+          <div class="card">
+            <span class="badge gold">Runtime Aware</span>
+            <h3>Storage Handoff</h3>
+            <p>The plugin distinguishes between editable workspace models and stored runtime-ready assets in ServerStorage.</p>
+          </div>
+        </div>
+      </section>
+
+      <section id="objectives">
+        <h2>Objectives</h2>
+        <div class="two-col">
+          <div class="card">
+            <span class="badge teal">Purpose</span>
+            <h3>What The Plugin Exists To Do</h3>
+            <p>
+              The plugin exists to reduce the friction between idea, generated geometry, inspection, and final storage. It is designed for creators who want to work
+              quickly from prompts but still keep control over technical details like collider mode, anchoring, scale, preview quality, and runtime storage behavior.
+            </p>
+          </div>
+          <div class="card">
+            <span class="badge green">Objective</span>
+            <h3>What “Success” Looks Like</h3>
+            <p>
+              A successful run is not just “a model appeared.” A successful run means the generated model was previewed, checked, optionally corrected, and stored in a
+              way that makes sense for live play. The plugin is structured to support that full loop.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <section id="workflow">
+        <h2>Recommended Workflow</h2>
+        <p class="lead">The plugin is easiest to understand as a five-step pipeline.</p>
+        <div class="workflow">
+          <div class="timeline-step">
+            <span class="badge blue">Step 1</span>
+            <h4>Choose A Detail Level</h4>
+            <p>Use Medium, High, or Ultra to establish an initial balance between fidelity, complexity, and collider behavior.</p>
+          </div>
+          <div class="timeline-step">
+            <span class="badge teal">Step 2</span>
+            <h4>Write The Request</h4>
+            <p>Fill out prompt, seed, schema, collider mode, size, triangle budget, texture preference, base preference, and anchoring.</p>
+          </div>
+          <div class="timeline-step">
+            <span class="badge purple">Step 3</span>
+            <h4>Preview It</h4>
+            <p>Open the preview widget, orbit the model, inspect stats, change display presets, and verify scale/collision readability.</p>
+          </div>
+          <div class="timeline-step">
+            <span class="badge green">Step 4</span>
+            <h4>Generate The Final</h4>
+            <p>Run the full generation once the preview direction is acceptable.</p>
+          </div>
+          <div class="timeline-step">
+            <span class="badge gold">Step 5</span>
+            <h4>Store Intentionally</h4>
+            <p>Store only the generated models you actually want prepared for runtime regeneration or later editing.</p>
+          </div>
+        </div>
+      </section>
+
+      <section id="features">
+        <h2>Feature Surface</h2>
+        <div class="feature-grid">
+          <div class="card">
+            <span class="badge blue">Main Panel</span>
+            <h3>Generation Basics</h3>
+            <ul>
+              <li><strong>Model size</strong> defines the target scale in studs.</li>
+              <li><strong>Triangle budget</strong> caps mesh complexity.</li>
+              <li><strong>Textures</strong> toggles generated material detail.</li>
+              <li><strong>Generated base</strong> controls whether a base/platform should be included.</li>
+              <li><strong>Anchored</strong> controls whether inserted results are fixed in place.</li>
+            </ul>
+          </div>
+
+          <div class="card">
+            <span class="badge teal">Collision</span>
+            <h3>Collision Setup</h3>
+            <ul>
+              <li><code>ai</code> automatically chooses a collider strategy.</li>
+              <li><code>simple</code> uses broader blockers.</li>
+              <li><code>medium</code> groups nearby shapes.</li>
+              <li><code>detailed</code> keeps tighter collision volumes.</li>
+              <li>Advanced heuristic tuning can be surfaced from settings.</li>
+            </ul>
+          </div>
+
+          <div class="card">
+            <span class="badge purple">Prompt Controls</span>
+            <h3>Prompt, Schema, Seed</h3>
+            <ul>
+              <li>The prompt is the primary creative control.</li>
+              <li><strong>Schema</strong> targets the predefined Roblox generation schema, defaulting to <code>Body1</code>.</li>
+              <li><strong>Seed</strong> supports repeatability and variation management.</li>
+              <li>Prompt history is persisted and exposed in settings.</li>
+            </ul>
+          </div>
+
+          <div class="card">
+            <span class="badge green">Actions</span>
+            <h3>Primary Buttons</h3>
+            <ul>
+              <li><strong>Preview</strong> generates a visual preview.</li>
+              <li><strong>Generate</strong> runs the full model generation.</li>
+              <li><strong>Store Selected Model</strong> prepares one chosen asset for runtime regeneration.</li>
+              <li><strong>Store All Models</strong> stores every generated model found in Workspace.</li>
+              <li><strong>Show Stored Models</strong> pulls backed-up stored models into an editable workspace folder.</li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
+      <section id="storage">
+        <h2>Storage And Runtime Pipeline</h2>
+        <p class="lead">
+          One of the most important design choices in this plugin is that it separates editable and stored model states.
+        </p>
+        <div class="two-col">
+          <div class="card">
+            <span class="badge gold">Editable State</span>
+            <h3>Workspace Editing</h3>
+            <p>
+              When stored assets are pulled back out for editing, they are placed in
+              <code>Workspace/DetailedModelEditableModels</code>. This is the plugin’s “safe editing” area for models you want to inspect or correct before storing again.
+            </p>
+          </div>
+          <div class="card">
+            <span class="badge purple">Stored State</span>
+            <h3>ServerStorage Backups</h3>
+            <p>
+              Models prepared for play are moved through <code>ServerStorage/DetailedModelPreviewBackups</code> and the plugin writes runtime regeneration metadata so a fresh
+              model can be produced during Play.
+            </p>
+          </div>
+        </div>
+
+        <pre><code>Workspace/DetailedModelEditableModels
+ServerStorage/DetailedModelPreviewBackups
+ServerStorage/DetailedModelVisualCache</code></pre>
+      </section>
+
+      <section id="preview">
+        <h2>Preview System</h2>
+        <div class="feature-grid">
+          <div class="card">
+            <span class="badge blue">Viewport</span>
+            <h3>Model Inspection</h3>
+            <p>
+              The preview widget contains a dedicated <code>ViewportFrame</code>, world model, camera, stats panel, and control clusters so creators can inspect the generated
+              asset without immediately committing it to the main workspace.
+            </p>
+          </div>
+
+          <div class="card">
+            <span class="badge teal">Display Tools</span>
+            <h3>View And Display Options</h3>
+            <ul>
+              <li>Front, side, top, and isometric camera presets</li>
+              <li>Lighting presets: Studio, Neutral, Dramatic, Outdoor</li>
+              <li>Background presets: Cool, Charcoal, Light, Sand</li>
+              <li>Auto-rotate, zoom, rotation speed, origin marker, bounds overlay, and collision opacity</li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
+      <section id="theming">
+        <h2>Theming And Guidebook</h2>
+        <div class="feature-grid">
+          <div class="card">
+            <span class="badge purple">Theme System</span>
+            <h3>Preset Themes + Styling Lab</h3>
+            <p>
+              The plugin ships with a preset theme catalog and a layered styling system. Users can change the base theme, then push it further through
+              <strong>variant</strong>, <strong>tone</strong>, <strong>contrast</strong>, and <strong>typography</strong> overrides. Theme transitions and button motion are animated.
+            </p>
+          </div>
+          <div class="card">
+            <span class="badge green">Guidebook</span>
+            <h3>In-Plugin Documentation</h3>
+            <p>
+              The guidebook is a separate docked widget that acts as a visual walkthrough. Workflow steps can highlight actual UI sections in the main plugin so the guide
+              does not stay abstract.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <section id="experimental">
+        <h2>Experimental Controls</h2>
+        <div class="feature-grid">
+          <div class="card">
+            <span class="badge teal">Prompt Steering</span>
+            <h3>Creative Overrides</h3>
+            <ul>
+              <li><strong>Negative Prompt</strong>: excludes unwanted features or phrases.</li>
+              <li><strong>Style Bias</strong>: cycles between Off, Realistic, Stylized, Hard Surface, Organic, and Toy-like.</li>
+            </ul>
+          </div>
+          <div class="card">
+            <span class="badge gold">Behavior Overrides</span>
+            <h3>Preview And Placement</h3>
+            <ul>
+              <li><strong>Preview Mode</strong>: Fast, Balanced, or High Quality simplification tuning.</li>
+              <li><strong>Ground Snap At Origin</strong>: places generated output with its base on the ground plane instead of only centering pivot.</li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
+      <section id="important">
+        <h2>Important Collision And Texture Note</h2>
+        <div class="callout warning">
+          <span class="badge red">Important</span>
+          <h4>Manual Collision Pass Required Before Storage</h4>
+          <p>
+            Because the mesh is generated first and the texturing/storage path completes later when the stored asset is loaded into a live server, the collision setup may
+            need a manual correction before you store the model. If you want the final live-server result to use the intended collision, open the generated model after
+            generation and set <code>CollisionFidelity</code> to <code>Precise</code> on the generated mesh parts before storing the model back into storage.
+          </p>
+          <ul>
+            <li>Generate the model.</li>
+            <li>Inspect the generated mesh parts in Studio.</li>
+            <li>Set <code>CollisionFidelity = Precise</code> where needed.</li>
+            <li>Store the model only after that manual collision correction is done.</li>
+          </ul>
+        </div>
+
+        <div class="callout note" style="margin-top: 16px;">
+          <span class="badge gold">Why This Matters</span>
+          <h4>Visual Correctness Is Not The Same As Runtime Correctness</h4>
+          <p>
+            A generated model can look visually correct in Studio while still using the wrong gameplay collision shape in the live server. This note exists to prevent that mismatch.
+          </p>
+        </div>
+      </section>
+
+      <section id="structure">
+        <h2>Plugin Structure Summary</h2>
+        <pre><code>Detailed Model Maker
+├── Main widget
+│   ├── Prompt and detail level controls
+│   ├── Generation basics
+│   ├── Collision setup, schema, seed
+│   └── Preview / generate / storage actions
+├── Preview widget
+│   ├── ViewportFrame preview
+│   ├── Stats panel
+│   └── Camera and display controls
+├── Settings widget
+│   ├── Cache and behavior settings
+│   ├── Theme styling lab
+│   └── Experimental controls
+└── Guide widget
+    ├── Visual workflow cards
+    ├── Important runtime notes
+    └── Step-to-UI highlighting</code></pre>
+      </section>
+
+      <div class="footer">
+        Documentation generated from the plugin implementation at
+        <code>C:\Users\ZeroManYT\AppData\Local\Roblox\Plugins\DetailedModelMaker.lua</code>.
+      </div>
+    </main>
+  </div>
+</body>
+</html>
