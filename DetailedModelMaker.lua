@@ -3,6 +3,7 @@
 
 local ChangeHistoryService = game:GetService("ChangeHistoryService")
 local GenerationService = game:GetService("GenerationService")
+local HttpService = game:GetService("HttpService")
 local RunService = game:GetService("RunService")
 local Selection = game:GetService("Selection")
 local ServerScriptService = game:GetService("ServerScriptService")
@@ -10,11 +11,24 @@ local ServerStorage = game:GetService("ServerStorage")
 local TweenService = game:GetService("TweenService")
 local UserInputService = game:GetService("UserInputService")
 
+local TOOLBAR_ICON = "rbxassetid://108716578848650"
+local PLUGIN_VERSION = "2026.03.30"
+local PLUGIN_GITHUB_REPO = "ZeroMan2002/DetailedModelMaker-Plugin"
+local PLUGIN_GITHUB_REPO_URL = "https://github.com/" .. PLUGIN_GITHUB_REPO
+local PLUGIN_GITHUB_RELEASES_URL = PLUGIN_GITHUB_REPO_URL .. "/releases"
+local PLUGIN_GITHUB_LATEST_RELEASE_API = "https://api.github.com/repos/" .. PLUGIN_GITHUB_REPO .. "/releases/latest"
+
+local themeAudioState = {
+	initialized = false,
+	lastButtonAt = 0,
+	soundSerial = 0,
+}
+
 local TOOLBAR = plugin:CreateToolbar("Detailed Models")
 local OPEN_BUTTON = TOOLBAR:CreateButton(
 	"Detailed Model",
 	"Generate detailed Roblox models from a text prompt",
-	""
+	TOOLBAR_ICON
 )
 OPEN_BUTTON.ClickableWhenViewportHidden = true
 
@@ -138,6 +152,7 @@ local SETTINGS = {
 	schema = "DetailedModelMaker_Schema",
 	colliderMode = "DetailedModelMaker_ColliderMode",
 	seed = "DetailedModelMaker_Seed",
+	variationCount = "DetailedModelMaker_VariationCount",
 	collisionPreview = "DetailedModelMaker_CollisionPreview",
 	collisionSimpleMaxParts = "DetailedModelMaker_CollisionSimpleMaxParts",
 	collisionSimpleOccupancy = "DetailedModelMaker_CollisionSimpleOccupancy",
@@ -154,13 +169,28 @@ local SETTINGS = {
 	themeTypography = "DetailedModelMaker_ThemeTypography",
 	cacheEnabled = "DetailedModelMaker_CacheEnabled",
 	autoOpenPreview = "DetailedModelMaker_AutoOpenPreview",
+	uiAudioEnabled = "DetailedModelMaker_UiAudioEnabled",
+	uiAudioVolume = "DetailedModelMaker_UiAudioVolume",
+	themeChangeAudioEnabled = "DetailedModelMaker_ThemeChangeAudioEnabled",
+	themeChangeAudioVolume = "DetailedModelMaker_ThemeChangeAudioVolume",
+	variationCompletionAudioEnabled = "DetailedModelMaker_VariationCompletionAudioEnabled",
 	showAdvancedCollisionTuning = "DetailedModelMaker_ShowAdvancedCollisionTuning",
 	confirmStoreAll = "DetailedModelMaker_ConfirmStoreAll",
 	promptHistory = "DetailedModelMaker_PromptHistory",
+	promptFavorites = "DetailedModelMaker_PromptFavorites",
+	namePattern = "DetailedModelMaker_NamePattern",
+	batchLayout = "DetailedModelMaker_BatchLayout",
 	experimentalNegativePrompt = "DetailedModelMaker_ExperimentalNegativePrompt",
+	experimentalScenePrompt = "DetailedModelMaker_ExperimentalScenePrompt",
+	experimentalScenePromptEnabled = "DetailedModelMaker_ExperimentalScenePromptEnabled",
 	experimentalStyleBias = "DetailedModelMaker_ExperimentalStyleBias",
 	experimentalPreviewMode = "DetailedModelMaker_ExperimentalPreviewMode",
 	experimentalGroundSnap = "DetailedModelMaker_ExperimentalGroundSnap",
+	updateLatestReleaseTag = "DetailedModelMaker_UpdateLatestReleaseTag",
+	updateLatestReleaseUrl = "DetailedModelMaker_UpdateLatestReleaseUrl",
+	updateLatestReleasePublishedAt = "DetailedModelMaker_UpdateLatestReleasePublishedAt",
+	updateLastCheckedAt = "DetailedModelMaker_UpdateLastCheckedAt",
+	updateLastStatus = "DetailedModelMaker_UpdateLastStatus",
 }
 
 local THEMES = {
@@ -1043,6 +1073,7 @@ end
 
 for _, entry in ipairs({
 	{{"Fallout 4 Terminal", rgb(39, 62, 41), rgb(15, 24, 17), rgb(112, 209, 108), rgb(174, 247, 150), rgb(70, 182, 109), rgb(206, 166, 82)}, "Post-Apocalypse"},
+	{{"Matrix", rgb(18, 37, 24), rgb(3, 10, 5), rgb(56, 196, 96), rgb(162, 255, 174), rgb(49, 173, 104), rgb(112, 233, 146)}, "Sci-Fi & Shooters"},
 	{{"Minecraft Grass", rgb(87, 126, 67), rgb(48, 74, 35), rgb(110, 173, 86), rgb(149, 205, 97), rgb(76, 176, 106), rgb(198, 152, 76)}, "Sandbox & Survival"},
 	{{"Fortnite Neon", rgb(58, 73, 126), rgb(27, 33, 71), rgb(88, 147, 255), rgb(111, 239, 255), rgb(72, 201, 149), rgb(255, 181, 72)}, "Competitive & Hero"},
 	{{"Grand Theft Auto Sunset", rgb(105, 66, 104), rgb(55, 32, 57), rgb(244, 127, 96), rgb(255, 177, 120), rgb(87, 185, 127), rgb(236, 160, 77)}, "Racing & Action"},
@@ -1211,9 +1242,57 @@ local collisionHeuristicPresets = {
 
 local collisionHeuristicsConfig = cloneTable(defaultCollisionHeuristics)
 
+function clampUnitNumber(value, fallback)
+	local numeric = tonumber(value)
+	if numeric == nil then
+		numeric = fallback or 0
+	end
+	if numeric < 0 then
+		return 0
+	elseif numeric > 1 then
+		return 1
+	end
+	return numeric
+end
+
+function legacyAudioSettingToEnabled(value, defaultEnabled)
+	if type(value) == "number" then
+		return value > 0
+	end
+	local mode = tostring(value or "")
+	if mode == "Off" then
+		return false
+	elseif mode == "Low" or mode == "Medium" or mode == "High" then
+		return true
+	end
+	return defaultEnabled == nil and true or (defaultEnabled == true)
+end
+
+function legacyAudioSettingToLevel(value, defaultLevel)
+	if type(value) == "number" then
+		return clampUnitNumber(value, defaultLevel or 0.72)
+	end
+	local mode = tostring(value or "")
+	if mode == "Low" then
+		return 0.35
+	elseif mode == "High" then
+		return 1
+	elseif mode == "Off" then
+		return defaultLevel or 0.72
+	end
+	return 0.72
+end
+
 local collisionPreviewEnabled = getBooleanSetting(SETTINGS.collisionPreview, false)
 local cacheEnabled = getBooleanSetting(SETTINGS.cacheEnabled, false)
 local autoOpenPreviewEnabled = getBooleanSetting(SETTINGS.autoOpenPreview, false)
+local storedUiAudioVolumeSetting = getSetting(SETTINGS.uiAudioVolume, "Medium")
+local storedThemeAudioVolumeSetting = getSetting(SETTINGS.themeChangeAudioVolume, "Medium")
+local uiAudioEnabled = getBooleanSetting(SETTINGS.uiAudioEnabled, legacyAudioSettingToEnabled(storedUiAudioVolumeSetting, true))
+local uiAudioVolumeLevel = legacyAudioSettingToLevel(storedUiAudioVolumeSetting, 0.72)
+local themeChangeAudioEnabled = getBooleanSetting(SETTINGS.themeChangeAudioEnabled, legacyAudioSettingToEnabled(storedThemeAudioVolumeSetting, true))
+local themeChangeAudioVolumeLevel = legacyAudioSettingToLevel(storedThemeAudioVolumeSetting, 0.72)
+local variationCompletionAudioEnabled = getBooleanSetting(SETTINGS.variationCompletionAudioEnabled, true)
 local showAdvancedCollisionTuning = getBooleanSetting(SETTINGS.showAdvancedCollisionTuning, false)
 local confirmStoreAllEnabled = getBooleanSetting(SETTINGS.confirmStoreAll, true)
 local collisionPreviewHighlights = {}
@@ -1247,15 +1326,15 @@ ui.settingsSearchShortcuts = {}
 ui.guideStepButtons = {}
 ui.guideFocusGroups = {}
 local themeState = {
-	name = tostring(getSetting(SETTINGS.theme, "Midnight")),
+	name = tostring(getSetting(SETTINGS.theme, "Meadow")),
 	current = nil,
-	variant = normalizeThemeChoice(getSetting(SETTINGS.themeVariant, "Default"), THEME_VARIANT_ORDER, "Default"),
+	variant = normalizeThemeChoice(getSetting(SETTINGS.themeVariant, "Soft"), THEME_VARIANT_ORDER, "Soft"),
 	tone = normalizeThemeChoice(getSetting(SETTINGS.themeTone, "Default"), THEME_TONE_ORDER, "Default"),
-	contrast = normalizeThemeChoice(getSetting(SETTINGS.themeContrast, "Balanced"), THEME_CONTRAST_ORDER, "Balanced"),
-	typography = normalizeThemeChoice(getSetting(SETTINGS.themeTypography, "Theme Default"), THEME_TYPOGRAPHY_ORDER, "Theme Default"),
+	contrast = normalizeThemeChoice(getSetting(SETTINGS.themeContrast, "Soft"), THEME_CONTRAST_ORDER, "Soft"),
+	typography = normalizeThemeChoice(getSetting(SETTINGS.themeTypography, "Studio Sans"), THEME_TYPOGRAPHY_ORDER, "Studio Sans"),
 }
 if not THEMES[themeState.name] then
-	themeState.name = "Midnight"
+	themeState.name = "Meadow"
 end
 themeState.current = buildStyledTheme(
 	themeState.name,
@@ -1269,6 +1348,18 @@ function createCorner(instance, radius)
 	local corner = Instance.new("UICorner")
 	corner.CornerRadius = UDim.new(0, radius or 10)
 	corner.Parent = instance
+end
+
+function setCornerRadius(instance, radius)
+	if not instance then
+		return
+	end
+	local corner = instance:FindFirstChildOfClass("UICorner")
+	if not corner then
+		corner = Instance.new("UICorner")
+		corner.Parent = instance
+	end
+	corner.CornerRadius = UDim.new(0, radius or 10)
 end
 
 local THEME_TWEEN_INFO = TweenInfo.new(0.28, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
@@ -1394,6 +1485,7 @@ function attachButtonThemeMotion(button)
 	button.MouseButton1Down:Connect(function()
 		button:SetAttribute("ThemePressed", true)
 		refreshButtonMotion(button)
+		playThemeUiSound("button_press", button)
 	end)
 
 	button.MouseButton1Up:Connect(function()
@@ -1544,6 +1636,487 @@ function applyThemeToTextBox(entry)
 	addVerticalGradient(box, themeState.current.inputTop, themeState.current.inputBottom)
 end
 
+function determineProceduralness(themeName, category)
+	local score = 0.4
+	local lowerThemeName = string.lower(themeName or "")
+	if string.find(lowerThemeName, "matrix", 1, true)
+		or string.find(lowerThemeName, "terminal", 1, true)
+		or string.find(lowerThemeName, "neon", 1, true) then
+		score = score + 0.25
+	end
+	if string.find(lowerThemeName, "blueprint", 1, true)
+		or string.find(lowerThemeName, "arcade", 1, true) then
+		score = score + 0.15
+	end
+	if category == "Sci-Fi & Shooters" or category == "Arcade & Indie" then
+		score = score + 0.2
+	end
+	if category == "Studio & Utility" then
+		score = score - 0.1
+	end
+	if string.len(lowerThemeName) > 12 then
+		score = score + 0.05
+	end
+	return math.min(math.max(score, 0), 1)
+end
+
+function getButtonAppearanceProfile(themeName, role)
+	local category = getThemeCategory(themeName)
+	local lowerThemeName = string.lower(themeName or "")
+	local lowerCategory = string.lower(category or "")
+	local lowerRole = string.lower(tostring(role or "secondary"))
+	local proceduralness = determineProceduralness(themeName, category)
+	local conceptTag = "utility"
+	if string.find(lowerThemeName, "matrix", 1, true) then
+		conceptTag = "matrix"
+	elseif string.find(lowerThemeName, "fallout", 1, true)
+		or string.find(lowerThemeName, "terminal", 1, true)
+		or string.find(lowerThemeName, "solarized", 1, true)
+		or string.find(lowerThemeName, "monochrome", 1, true)
+		or string.find(lowerThemeName, "blueprint", 1, true) then
+		conceptTag = "terminal"
+	elseif string.find(lowerThemeName, "arcade", 1, true)
+		or string.find(lowerThemeName, "neon", 1, true)
+		or string.find(lowerThemeName, "retro", 1, true)
+		or string.find(lowerThemeName, "crt", 1, true)
+		or string.find(lowerThemeName, "laser", 1, true)
+		or string.find(lowerThemeName, "carnival", 1, true)
+		or string.find(lowerThemeName, "toybox", 1, true)
+		or string.find(lowerThemeName, "mario", 1, true)
+		or string.find(lowerThemeName, "persona", 1, true) then
+		conceptTag = "arcade"
+	elseif string.find(lowerThemeName, "cyber", 1, true)
+		or string.find(lowerThemeName, "synth", 1, true)
+		or string.find(lowerThemeName, "hacker", 1, true)
+		or string.find(lowerThemeName, "galaxy", 1, true)
+		or string.find(lowerThemeName, "nebula", 1, true)
+		or string.find(lowerThemeName, "prism", 1, true)
+		or string.find(lowerThemeName, "future", 1, true)
+		or string.find(lowerThemeName, "mass effect", 1, true)
+		or string.find(lowerThemeName, "destiny", 1, true)
+		or string.find(lowerThemeName, "portal", 1, true)
+		or string.find(lowerThemeName, "helldivers", 1, true) then
+		conceptTag = "cyber"
+	elseif string.find(lowerThemeName, "forest", 1, true)
+		or string.find(lowerThemeName, "moss", 1, true)
+		or string.find(lowerThemeName, "pine", 1, true)
+		or string.find(lowerThemeName, "jade", 1, true)
+		or string.find(lowerThemeName, "aurora", 1, true)
+		or string.find(lowerThemeName, "rainforest", 1, true)
+		or string.find(lowerThemeName, "seafoam", 1, true)
+		or string.find(lowerThemeName, "mint", 1, true)
+		or string.find(lowerThemeName, "animal", 1, true)
+		or string.find(lowerThemeName, "stardew", 1, true)
+		or string.find(lowerThemeName, "terraria", 1, true)
+		or string.find(lowerThemeName, "sea of thieves", 1, true) then
+		conceptTag = "nature"
+	elseif string.find(lowerThemeName, "noir", 1, true)
+		or string.find(lowerThemeName, "obsidian", 1, true)
+		or string.find(lowerThemeName, "dracula", 1, true)
+		or string.find(lowerThemeName, "silent", 1, true)
+		or string.find(lowerThemeName, "dead", 1, true)
+		or string.find(lowerThemeName, "biohazard", 1, true)
+		or string.find(lowerThemeName, "fog", 1, true)
+		or string.find(lowerThemeName, "diablo", 1, true)
+		or string.find(lowerThemeName, "ember", 1, true)
+		or string.find(lowerThemeName, "lava", 1, true)
+		or string.find(lowerThemeName, "doom", 1, true) then
+		conceptTag = "horror"
+	elseif string.find(lowerThemeName, "royal", 1, true)
+		or string.find(lowerThemeName, "skyrim", 1, true)
+		or string.find(lowerThemeName, "witcher", 1, true)
+		or string.find(lowerThemeName, "zelda", 1, true)
+		or string.find(lowerThemeName, "genshin", 1, true)
+		or string.find(lowerThemeName, "starlight", 1, true)
+		or string.find(lowerThemeName, "elden", 1, true)
+		or string.find(lowerThemeName, "monster", 1, true)
+		or string.find(lowerThemeName, "warcraft", 1, true)
+		or string.find(lowerThemeName, "sapphire", 1, true) then
+		conceptTag = "fantasy"
+	elseif string.find(lowerThemeName, "valorant", 1, true)
+		or string.find(lowerThemeName, "apex", 1, true)
+		or string.find(lowerThemeName, "fortnite", 1, true)
+		or string.find(lowerThemeName, "rainbow", 1, true)
+		or string.find(lowerThemeName, "counter", 1, true)
+		or string.find(lowerThemeName, "battlefield", 1, true)
+		or string.find(lowerThemeName, "call of duty", 1, true)
+		or string.find(lowerThemeName, "steel", 1, true)
+		or string.find(lowerThemeName, "construction", 1, true)
+		or string.find(lowerThemeName, "halo", 1, true) then
+		conceptTag = "tactical"
+	elseif string.find(lowerThemeName, "rocket", 1, true)
+		or string.find(lowerThemeName, "speed", 1, true)
+		or string.find(lowerThemeName, "turismo", 1, true)
+		or string.find(lowerThemeName, "sunset", 1, true)
+		or string.find(lowerThemeName, "turbo", 1, true)
+		or string.find(lowerThemeName, "gran", 1, true)
+		or string.find(lowerThemeName, "boardwalk", 1, true)
+		or string.find(lowerThemeName, "harbor", 1, true)
+		or string.find(lowerThemeName, "marina", 1, true)
+		or string.find(lowerThemeName, "lagoon", 1, true) then
+		conceptTag = "speed"
+	elseif string.find(lowerCategory, "sci-fi", 1, true) then
+		conceptTag = "cyber"
+	elseif string.find(lowerCategory, "sandbox", 1, true) then
+		conceptTag = "nature"
+	elseif string.find(lowerCategory, "horror", 1, true) then
+		conceptTag = "horror"
+	elseif string.find(lowerCategory, "fantasy", 1, true) then
+		conceptTag = "fantasy"
+	elseif string.find(lowerCategory, "competitive", 1, true) then
+		conceptTag = "tactical"
+	elseif string.find(lowerCategory, "racing", 1, true) then
+		conceptTag = "speed"
+	elseif string.find(lowerCategory, "arcade", 1, true) then
+		conceptTag = "arcade"
+	end
+	local key = lowerThemeName .. ":" .. lowerRole
+	local hash = 0
+	for index = 1, #key do
+		hash = (hash + string.byte(key, index) * (index + 3)) % 100000
+	end
+
+	local profile = {
+		conceptTag = conceptTag,
+		proceduralness = proceduralness,
+		cornerRadius = 8 + (hash % 7),
+		strokeThickness = 1 + ((hash % 2 == 0) and 0 or 0.35),
+		textInsetX = 6 + (hash % 3),
+		textInsetY = 3 + (hash % 2),
+		textureDensity = 0.9 + ((hash % 13) / 25),
+		overlayBias = ((hash % 17) / 100),
+		bevelDepth = 0.12 + ((hash % 8) / 100),
+		textShadowOffsetX = 0,
+		textShadowOffsetY = 1,
+		textShadowTransparency = 0.78,
+	}
+
+	if conceptTag == "matrix" then
+		profile.cornerRadius = 4
+		profile.strokeThickness = 1.3
+		profile.textInsetX = 8
+		profile.textInsetY = 4
+		profile.textureDensity = 1.35
+		profile.textShadowOffsetX = 1
+		profile.textShadowOffsetY = 0
+		profile.textShadowTransparency = 0.86
+	elseif conceptTag == "terminal" then
+		profile.cornerRadius = string.find(lowerThemeName, "blueprint", 1, true) and 6 or 5
+		profile.strokeThickness = 1.2
+		profile.textInsetX = 8
+		profile.textInsetY = 4
+		profile.textureDensity = 1.2
+		profile.textShadowOffsetX = 1
+		profile.textShadowOffsetY = 0
+		profile.textShadowTransparency = 0.84
+	elseif conceptTag == "arcade" then
+		profile.cornerRadius = 12 + (hash % 4)
+		profile.strokeThickness = 1.5
+		profile.textInsetX = 7
+		profile.textInsetY = 3
+		profile.textureDensity = 1.25
+		profile.textShadowOffsetX = 1
+		profile.textShadowOffsetY = 1
+		profile.textShadowTransparency = 0.7
+	elseif conceptTag == "cyber" then
+		profile.cornerRadius = 7 + (hash % 3)
+		profile.strokeThickness = 1.25
+		profile.textureDensity = 1.2
+		profile.textShadowOffsetX = 1
+		profile.textShadowOffsetY = 0
+		profile.textShadowTransparency = 0.8
+	elseif conceptTag == "nature" then
+		profile.cornerRadius = 14 + (hash % 5)
+		profile.strokeThickness = 1
+		profile.textureDensity = 0.92
+		profile.textShadowOffsetY = 1
+		profile.textShadowTransparency = 0.82
+	elseif conceptTag == "horror" then
+		profile.cornerRadius = 6 + (hash % 4)
+		profile.strokeThickness = 1.45
+		profile.textureDensity = 1.1
+		profile.textShadowOffsetX = 1
+		profile.textShadowOffsetY = 2
+		profile.textShadowTransparency = 0.64
+	elseif conceptTag == "fantasy" then
+		profile.cornerRadius = 13 + (hash % 4)
+		profile.strokeThickness = 1.15
+		profile.textureDensity = 1.06
+		profile.textShadowOffsetY = 1
+		profile.textShadowTransparency = 0.74
+	elseif conceptTag == "tactical" then
+		profile.cornerRadius = 7 + (hash % 2)
+		profile.strokeThickness = 1.35
+		profile.textInsetX = 8
+		profile.textureDensity = 1.08
+		profile.textShadowOffsetX = 1
+		profile.textShadowOffsetY = 1
+		profile.textShadowTransparency = 0.8
+	elseif conceptTag == "speed" then
+		profile.cornerRadius = 9 + (hash % 3)
+		profile.strokeThickness = 1.25
+		profile.textureDensity = 1.18
+		profile.textShadowOffsetX = 1
+		profile.textShadowOffsetY = 1
+		profile.textShadowTransparency = 0.76
+	end
+
+	if lowerRole == "warning" or lowerRole == "danger" then
+		profile.strokeThickness += 0.2
+		profile.textureDensity += 0.06
+	elseif lowerRole == "muted" then
+		profile.strokeThickness = math.max(1, profile.strokeThickness - 0.15)
+		profile.textureDensity = math.max(0.82, profile.textureDensity - 0.08)
+	elseif lowerRole == "active" or lowerRole == "success" then
+		profile.textureDensity += 0.08
+	end
+
+	if themeState.variant == "Soft" then
+		profile.cornerRadius += 3
+		profile.strokeThickness = math.max(1, profile.strokeThickness - 0.15)
+		profile.textShadowTransparency = math.min(0.92, profile.textShadowTransparency + 0.08)
+	elseif themeState.variant == "Vivid" then
+		profile.strokeThickness += 0.2
+		profile.textureDensity += 0.08
+		profile.textShadowTransparency = math.max(0.55, profile.textShadowTransparency - 0.08)
+	elseif themeState.variant == "Noir" then
+		profile.cornerRadius = math.max(4, profile.cornerRadius - 1)
+		profile.textShadowTransparency = math.max(0.58, profile.textShadowTransparency - 0.05)
+	end
+
+	if themeState.contrast == "Punchy" then
+		profile.strokeThickness += 0.2
+	elseif themeState.contrast == "Soft" then
+		profile.cornerRadius += 2
+	end
+
+	profile.cornerRadius = math.clamp(math.floor(profile.cornerRadius + 0.5), 4, 20)
+	profile.strokeThickness = math.clamp(profile.strokeThickness, 1, 2.2)
+	profile.textInsetX = math.clamp(math.floor(profile.textInsetX + 0.5), 5, 10)
+	profile.textInsetY = math.clamp(math.floor(profile.textInsetY + 0.5), 2, 5)
+	profile.textureDensity = math.clamp(profile.textureDensity, 0.8, 1.45)
+	profile.textShadowOffsetX = math.clamp(math.floor(profile.textShadowOffsetX + 0.5), 0, 2)
+	profile.textShadowOffsetY = math.clamp(math.floor(profile.textShadowOffsetY + 0.5), 0, 2)
+	profile.textShadowTransparency = math.clamp(profile.textShadowTransparency, 0.55, 0.92)
+	return profile
+end
+
+function getButtonTextureProfile(themeName, role)
+	local category = getThemeCategory(themeName)
+	local lowerThemeName = string.lower(themeName or "")
+	local proceduralness = determineProceduralness(themeName, category)
+	local appearance = getButtonAppearanceProfile(themeName, role)
+	local key = lowerThemeName .. ":" .. tostring(role or "secondary")
+	local hash = 0
+	for index = 1, #key do
+		hash = (hash + string.byte(key, index) * index) % 100000
+	end
+
+	local baseIntensity = 0.22 + ((hash % 20) / 100)
+	local baseBand = 0.36 + ((hash % 28) / 100)
+	local baseSide = 0.06 + ((hash % 6) / 100)
+	local profile = {
+		style = "sheen",
+		intensity = math.clamp(baseIntensity * (0.75 + proceduralness * 0.5) * appearance.textureDensity, 0.08, 0.78),
+		bandScale = math.clamp(baseBand * (0.85 + proceduralness * 0.3) * (0.92 + appearance.textureDensity * 0.12), 0.3, 0.82),
+		sideScale = math.clamp(baseSide * (0.8 + proceduralness * 0.4) * (0.94 + appearance.textureDensity * 0.08), 0.05, 0.24),
+		density = appearance.textureDensity,
+		appearance = appearance,
+	}
+
+	if string.find(lowerThemeName, "matrix", 1, true) then
+		profile.style = "matrix"
+		profile.intensity = 0.34
+		profile.bandScale = 0.62
+		profile.sideScale = 0.08
+	elseif string.find(lowerThemeName, "fallout", 1, true) or string.find(lowerThemeName, "terminal", 1, true) then
+		profile.style = "pipboy"
+		profile.intensity = 0.32
+		profile.bandScale = 0.54
+		profile.sideScale = 0.12
+	elseif string.find(lowerThemeName, "blueprint", 1, true) then
+		profile.style = "grid"
+		profile.intensity = 0.2
+		profile.bandScale = 0.48
+	elseif string.find(lowerThemeName, "arcade", 1, true) or string.find(lowerThemeName, "neon", 1, true) then
+		profile.style = "arcade"
+		profile.intensity = 0.3
+		profile.bandScale = 0.58
+	elseif category == "Fantasy & RPG" then
+		profile.style = "sigil"
+	elseif category == "Horror & Atmosphere" then
+		profile.style = "scratch"
+	elseif category == "Racing & Action" then
+		profile.style = "chevron"
+	elseif category == "Competitive & Hero" then
+		profile.style = "split"
+	elseif category == "Studio & Utility" then
+		profile.style = "brushed"
+	else
+		local styles = {"sheen", "brushed", "grid", "split", "chevron"}
+		profile.style = styles[(hash % #styles) + 1]
+	end
+
+	return profile
+end
+
+function styleButtonTextureLayer(button, baseColor)
+	local overlay = button and button:FindFirstChild("ThemeTextureOverlay")
+	if not overlay then
+		return
+	end
+
+	baseColor = baseColor or Color3.fromRGB(92, 110, 148)
+	local role = button:GetAttribute("ThemeRole") or "secondary"
+	local profile = getButtonTextureProfile(themeState.name, role)
+	local appearance = profile.appearance or getButtonAppearanceProfile(themeState.name, role)
+	local accent = baseColor:Lerp(Color3.fromRGB(255, 255, 255), 0.18 + profile.intensity * 0.26)
+	local accentColor = accent
+	local glowColor = baseColor:Lerp(Color3.fromRGB(255, 255, 255), 0.26 + profile.intensity * 0.38)
+	local subtle = baseColor:Lerp(Color3.fromRGB(255, 255, 255), 0.12 + profile.intensity * 0.08)
+	local shadow = baseColor:Lerp(Color3.fromRGB(0, 0, 0), 0.3)
+	local widthScale = math.clamp(profile.bandScale * 0.6 * appearance.textureDensity, 0.2, 0.82)
+	local sideScale = math.clamp(profile.sideScale * 0.7 * (0.9 + appearance.textureDensity * 0.1), 0.03, 0.18)
+	local overlayTrans = math.clamp(0.72 - profile.intensity * 0.25 - appearance.overlayBias * 0.4, 0.36, 0.88)
+
+	local function setFrame(name, size, position, color, transparency, rotation)
+		local frame = overlay:FindFirstChild(name)
+		if not frame then
+			return
+		end
+		if not color then
+			return
+		end
+		frame.Visible = true
+		frame.Size = size
+		frame.Position = position
+		frame.BackgroundColor3 = color
+		frame.BackgroundTransparency = transparency
+		if rotation ~= nil then
+			frame.Rotation = rotation
+		end
+	end
+
+	local function hide(name)
+		local frame = overlay:FindFirstChild(name)
+		if frame then
+			frame.Visible = false
+		end
+	end
+
+	for _, child in ipairs(overlay:GetChildren()) do
+		if child:IsA("Frame") then
+			child.Visible = false
+		end
+	end
+
+	if profile.style == "matrix" then
+		setFrame("TopBand", UDim2.new(widthScale * 0.6, 0, 0, 1), UDim2.new(0.1, 0, 0.22, 0), accent, overlayTrans)
+		setFrame("BottomBand", UDim2.new(widthScale * 0.6, 0, 0, 1), UDim2.new(0.1, 0, 0.78, 0), accent, overlayTrans)
+		setFrame("Line1", UDim2.new(1, -18, 0, 1), UDim2.new(0, 8, 0.3, 0), subtle, overlayTrans + 0.05)
+		setFrame("Line2", UDim2.new(1, -18, 0, 1), UDim2.new(0, 8, 0.55, 0), subtle, overlayTrans + 0.05)
+		setFrame("Line3", UDim2.new(1, -18, 0, 1), UDim2.new(0, 8, 0.8, 0), subtle, overlayTrans + 0.05)
+		setFrame("Dot1", UDim2.new(0, 3, 0, 3), UDim2.new(0.18, 0, 0.32, 0), accentColor, overlayTrans + 0.2)
+		setFrame("Dot2", UDim2.new(0, 3, 0, 3), UDim2.new(0.55, 0, 0.32, 0), accentColor, overlayTrans + 0.2)
+	elseif profile.style == "pipboy" then
+		setFrame("LeftAccent", UDim2.new(0, 5, 1, -10), UDim2.new(0.05, 0, 0, 6), accent, overlayTrans + 0.05)
+		setFrame("TopBand", UDim2.new(widthScale * 0.7, 0, 0, 1), UDim2.new(0.12, 0, 0.16, 0), accent, overlayTrans + 0.08)
+		setFrame("BottomBand", UDim2.new(widthScale * 0.7, 0, 0, 1), UDim2.new(0.18, 0, 0.78, 0), accent, overlayTrans + 0.08)
+		setFrame("Line2", UDim2.new(1, -16, 0, 1), UDim2.new(0, 8, 0.5, -1), subtle, overlayTrans + 0.1)
+		setFrame("Dot1", UDim2.new(0, 4, 0, 4), UDim2.new(0.28, 0, 0.44, 0), glowColor, overlayTrans + 0.15)
+		setFrame("Dot2", UDim2.new(0, 4, 0, 4), UDim2.new(0.48, 0, 0.44, 0), glowColor, overlayTrans + 0.15)
+		setFrame("Dot3", UDim2.new(0, 4, 0, 4), UDim2.new(0.68, 0, 0.44, 0), glowColor, overlayTrans + 0.15)
+	elseif profile.style == "grid" then
+		setFrame("Line1", UDim2.new(1, -12, 0, 1), UDim2.new(0, 6, 0.32, 0), subtle, overlayTrans + 0.04)
+		setFrame("Line2", UDim2.new(1, -12, 0, 1), UDim2.new(0, 6, 0.58, 0), subtle, overlayTrans + 0.04)
+		setFrame("Line3", UDim2.new(1, -12, 0, 1), UDim2.new(0, 6, 0.84, 0), subtle, overlayTrans + 0.04)
+		setFrame("VLine1", UDim2.new(0, 1, 1, -10), UDim2.new(0.35, 0, 0, 4), subtle, overlayTrans + 0.08)
+		setFrame("VLine2", UDim2.new(0, 1, 1, -10), UDim2.new(0.65, 0, 0, 4), subtle, overlayTrans + 0.08)
+	elseif profile.style == "arcade" then
+		setFrame("Sheen", UDim2.new(0, 30, 1.1, 0), UDim2.new(0.2, 0, 0.5, 0), accent, overlayTrans + 0.1, 16)
+		setFrame("TopBand", UDim2.new(widthScale * 0.9, 0, 0, 1), UDim2.new(0.1, 0, 0.18, 0), accent, overlayTrans + 0.05)
+		setFrame("Dot1", UDim2.new(0, 5, 0, 5), UDim2.new(0.22, 0, 0.38, 0), glowColor, overlayTrans + 0.08)
+		setFrame("Dot2", UDim2.new(0, 5, 0, 5), UDim2.new(0.45, 0, 0.38, 0), glowColor, overlayTrans + 0.08)
+		setFrame("Dot3", UDim2.new(0, 5, 0, 5), UDim2.new(0.68, 0, 0.38, 0), glowColor, overlayTrans + 0.08)
+	elseif profile.style == "sigil" then
+		setFrame("TopBand", UDim2.new(widthScale * 0.88, 0, 0, 2), UDim2.new(0.12, 0, 0.18, 0), accent, overlayTrans + 0.05)
+		setFrame("BottomBand", UDim2.new(widthScale * 0.88, 0, 0, 2), UDim2.new(0.12, 0, 0.76, 0), accent, overlayTrans + 0.08)
+		setFrame("Dot1", UDim2.new(0, 6, 0, 6), UDim2.new(0.5, -3, 0.5, -3), accent, overlayTrans + 0.12)
+		setFrame("VLine1", UDim2.new(0, 1, 0, 12), UDim2.new(0.5, 0, 0.28, 0), subtle, overlayTrans + 0.1)
+	elseif profile.style == "scratch" then
+		setFrame("Sheen", UDim2.new(0, 10, 1.3, 0), UDim2.new(0.28, 0, 0.5, 0), accent, overlayTrans + 0.12, 24)
+		setFrame("LeftAccent", UDim2.new(0, 2, 1, -10), UDim2.new(0.18, 0, 0, 5), subtle, overlayTrans + 0.08)
+		setFrame("RightAccent", UDim2.new(0, 2, 1, -12), UDim2.new(0.72, 0, 0, 6), subtle, overlayTrans + 0.1)
+	elseif profile.style == "chevron" then
+		setFrame("LeftAccent", UDim2.new(0, 8, 1, -8), UDim2.new(0.06, 0, 0, 5), accent, overlayTrans + 0.05)
+		setFrame("Sheen", UDim2.new(0, 16, 1.2, 0), UDim2.new(0.24, 0, 0.5, 0), accent, overlayTrans + 0.12, 24)
+		setFrame("TopBand", UDim2.new(widthScale * 0.7, 0, 0, 2), UDim2.new(0.22, 0, 0.18, 0), accent, overlayTrans + 0.08)
+	elseif profile.style == "split" then
+		setFrame("LeftAccent", UDim2.new(0, 5, 1, -8), UDim2.new(0, 5, 0, 4), accent, overlayTrans + 0.06)
+		setFrame("VLine1", UDim2.new(0, 1, 1, -10), UDim2.new(0.5, 0, 0, 5), subtle, overlayTrans + 0.08)
+		setFrame("TopBand", UDim2.new(widthScale * 0.76, 0, 0, 2), UDim2.new(0.12, 0, 0.18, 0), accent, overlayTrans + 0.08)
+	elseif profile.style == "brushed" then
+		setFrame("Line1", UDim2.new(1, -14, 0, 1), UDim2.new(0, 7, 0.3, 0), subtle, overlayTrans + 0.04)
+		setFrame("Line2", UDim2.new(1, -14, 0, 1), UDim2.new(0, 7, 0.54, 0), subtle, overlayTrans + 0.06)
+		setFrame("TopBand", UDim2.new(widthScale * 0.66, 0, 0, 2), UDim2.new(0.14, 0, 0.18, 0), accent, overlayTrans + 0.06)
+	else
+		setFrame("Sheen", UDim2.new(0, 18, 1.1, 0), UDim2.new(0.32, 0, 0.5, 0), accent, overlayTrans + 0.1, 12)
+		setFrame("TopBand", UDim2.new(widthScale * 0.85, 0, 0, 1), UDim2.new(0.1, 0, 0.18, 0), accent, overlayTrans + 0.08)
+	end
+
+	if appearance.conceptTag == "nature" then
+		setFrame("Dot4", UDim2.new(0, 4, 0, 4), UDim2.new(0.78, 0, 0.64, 0), glowColor, overlayTrans + 0.14)
+	elseif appearance.conceptTag == "horror" then
+		setFrame("RightAccent", UDim2.new(0, 2, 1, -8), UDim2.new(0.82, 0, 0, 4), shadow, overlayTrans + 0.06)
+	elseif appearance.conceptTag == "tactical" then
+		setFrame("RightAccent", UDim2.new(0, 4, 1, -8), UDim2.new(1, -9, 0, 4), accent, overlayTrans + 0.07)
+	elseif appearance.conceptTag == "speed" then
+		setFrame("Sheen", UDim2.new(0, 22, 1.15, 0), UDim2.new(0.42, 0, 0.5, 0), accent, overlayTrans + 0.08, 22)
+	end
+
+	local textLabel = button:FindFirstChild("ThemeTextLabel")
+	if textLabel and textLabel:IsA("TextLabel") then
+		textLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+	end
+end
+
+function applyButtonShapeProfile(button)
+	if not button then
+		return
+	end
+	local role = button:GetAttribute("ThemeRole") or "secondary"
+	local profile = getButtonAppearanceProfile(themeState.name, role)
+	setCornerRadius(button, profile.cornerRadius)
+	button.ClipsDescendants = true
+	button.TextTransparency = 1
+	button.TextStrokeTransparency = 1
+
+	local stroke = createStroke(button, themeState.current.buttonStroke)
+	if stroke then
+		stroke.Thickness = profile.strokeThickness
+	end
+
+	local textLabel = button:FindFirstChild("ThemeTextLabel")
+	if textLabel and textLabel:IsA("TextLabel") then
+		textLabel.Size = UDim2.new(1, -(profile.textInsetX * 2), 1, -(profile.textInsetY * 2))
+		textLabel.Position = UDim2.new(0, profile.textInsetX, 0, profile.textInsetY)
+	end
+
+	local shadowLabel = button:FindFirstChild("ThemeTextShadow")
+	if shadowLabel and shadowLabel:IsA("TextLabel") and textLabel and textLabel:IsA("TextLabel") then
+		shadowLabel.Size = textLabel.Size
+		shadowLabel.Position = UDim2.new(0, profile.textInsetX + profile.textShadowOffsetX, 0, profile.textInsetY + profile.textShadowOffsetY)
+	end
+
+	local overlay = button:FindFirstChild("ThemeTextureOverlay")
+	if overlay and overlay:IsA("Frame") then
+		setCornerRadius(overlay, math.max(2, profile.cornerRadius - 1))
+	end
+
+	button:SetAttribute("ThemeCornerRadius", profile.cornerRadius)
+	button:SetAttribute("ThemeTextureDensity", profile.textureDensity)
+end
+
 function applyThemeToButton(entry)
 	local button = entry.instance
 	if not button or not button.Parent then
@@ -1552,16 +2125,51 @@ function applyThemeToButton(entry)
 	local typography = themeState.current.typography or {}
 	local role = button:GetAttribute("ThemeRole") or entry.role or "secondary"
 	local baseColor = themeState.current.buttons[role] or themeState.current.buttons.secondary
+	baseColor = baseColor or Color3.fromRGB(94, 110, 128)
+	local appearance = getButtonAppearanceProfile(themeState.name, role)
+	applyButtonShapeProfile(button)
 	tweenThemeBackground(button, baseColor)
 	tweenThemeTextColor(button, Color3.fromRGB(255, 255, 255))
 	button.Font = typography.button or entry.defaultFont or Enum.Font.GothamBold
-	createStroke(button, themeState.current.buttonStroke)
 	tweenThemeStroke(button, themeState.current.buttonStroke)
 	addVerticalGradient(
 		button,
-		baseColor:Lerp(Color3.fromRGB(255, 255, 255), 0.12),
-		baseColor:Lerp(Color3.fromRGB(0, 0, 0), 0.14)
+		baseColor:Lerp(Color3.fromRGB(255, 255, 255), 0.12 + ((button:GetAttribute("ThemeTextureDensity") or 1) - 1) * 0.06),
+		baseColor:Lerp(Color3.fromRGB(0, 0, 0), 0.14 + (themeState.contrast == "Punchy" and 0.03 or 0))
 	)
+	styleButtonTextureLayer(button, baseColor)
+
+	local textLabel = button:FindFirstChild("ThemeTextLabel")
+	if textLabel and textLabel:IsA("TextLabel") then
+		textLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+		textLabel.TextTransparency = 0
+	end
+
+	local shadowLabel = button:FindFirstChild("ThemeTextShadow")
+	if shadowLabel and shadowLabel:IsA("TextLabel") and textLabel and textLabel:IsA("TextLabel") then
+		local wrapped = false
+		local availableWidth = math.max(textLabel.AbsoluteSize.X, 1)
+		local measured = nil
+		pcall(function()
+			measured = game:GetService("TextService"):GetTextSize(
+				button.Text or "",
+				textLabel.TextSize,
+				textLabel.Font,
+				Vector2.new(availableWidth, 1000)
+			)
+		end)
+		if measured and measured.Y > (textLabel.TextSize * 1.45) then
+			wrapped = true
+		elseif string.find(button.Text or "", "\n", 1, true) then
+			wrapped = true
+		end
+
+		shadowLabel.TextColor3 = baseColor:Lerp(Color3.fromRGB(0, 0, 0), wrapped and 0.58 or 0.72)
+		shadowLabel.TextTransparency = wrapped and 1 or appearance.textShadowTransparency
+		if wrapped then
+			shadowLabel.Position = textLabel.Position
+		end
+	end
 end
 
 function applyTheme(themeName)
@@ -1593,6 +2201,12 @@ function applyTheme(themeName)
 	for _, entry in ipairs(themeRegistry.buttons) do
 		applyThemeToButton(entry)
 	end
+	syncGenerationActivityTheme()
+	if themeAudioState.initialized then
+		playThemeUiSound("theme_change")
+	else
+		themeAudioState.initialized = true
+	end
 end
 
 function setThemeVariant(variant)
@@ -1620,10 +2234,10 @@ function setThemeTypography(typographyMode)
 end
 
 function resetThemeStyling()
-	themeState.variant = "Default"
+	themeState.variant = "Soft"
 	themeState.tone = "Default"
-	themeState.contrast = "Balanced"
-	themeState.typography = "Theme Default"
+	themeState.contrast = "Soft"
+	themeState.typography = "Studio Sans"
 	setSetting(SETTINGS.themeVariant, themeState.variant)
 	setSetting(SETTINGS.themeTone, themeState.tone)
 	setSetting(SETTINGS.themeContrast, themeState.contrast)
@@ -1761,6 +2375,403 @@ function createSettingsGroup(title, description)
 	return group, titleLabel, descriptionLabel
 end
 
+function createSettingsSubgroup(parent, title, description, topColor, bottomColor, strokeColor)
+	local group = Instance.new("Frame")
+	group.Size = UDim2.new(1, 0, 0, 0)
+	group.BackgroundColor3 = Color3.fromRGB(20, 24, 32)
+	group.BorderSizePixel = 0
+	group.AutomaticSize = Enum.AutomaticSize.Y
+	group.Parent = parent
+	styleCard(
+		group,
+		topColor or Color3.fromRGB(52, 64, 87),
+		bottomColor or Color3.fromRGB(31, 39, 53),
+		strokeColor or Color3.fromRGB(102, 126, 168),
+		false
+	)
+
+	local padding = Instance.new("UIPadding")
+	padding.PaddingTop = UDim.new(0, 10)
+	padding.PaddingBottom = UDim.new(0, 10)
+	padding.PaddingLeft = UDim.new(0, 10)
+	padding.PaddingRight = UDim.new(0, 10)
+	padding.Parent = group
+
+	local layout = Instance.new("UIListLayout")
+	layout.Padding = UDim.new(0, 8)
+	layout.FillDirection = Enum.FillDirection.Vertical
+	layout.Parent = group
+
+	local titleLabel = createLabel(title, 14, Enum.Font.GothamBold, Color3.fromRGB(245, 247, 250), 20)
+	enableAutoHeightLabel(titleLabel, 20)
+	titleLabel.Parent = group
+
+	local descriptionLabel = createLabel(
+		description,
+		12,
+		Enum.Font.Gotham,
+		Color3.fromRGB(171, 183, 199),
+		22
+	)
+	enableAutoHeightLabel(descriptionLabel, 22)
+	descriptionLabel.Parent = group
+
+	return group, titleLabel, descriptionLabel
+end
+
+function createVolumeSlider(accentColor, onChanged, titleText, descriptionText)
+	local slider = {}
+
+	local frame = Instance.new("Frame")
+	frame.Size = UDim2.new(1, 0, 0, (titleText or descriptionText) and 78 or 42)
+	frame.BackgroundColor3 = Color3.fromRGB(18, 22, 30)
+	frame.BorderSizePixel = 0
+	styleCard(
+		frame,
+		accentColor:Lerp(Color3.fromRGB(255, 255, 255), 0.1),
+		accentColor:Lerp(Color3.fromRGB(18, 22, 30), 0.78),
+		accentColor:Lerp(Color3.fromRGB(255, 255, 255), 0.2),
+		false
+	)
+
+	local padding = Instance.new("UIPadding")
+	padding.PaddingTop = UDim.new(0, 8)
+	padding.PaddingBottom = UDim.new(0, 8)
+	padding.PaddingLeft = UDim.new(0, 10)
+	padding.PaddingRight = UDim.new(0, 10)
+	padding.Parent = frame
+
+	local barTopInset = 0
+	if titleText or descriptionText then
+		local titleLabel = createLabel(titleText or "", 12, Enum.Font.GothamBold, Color3.fromRGB(240, 245, 250), 18)
+		titleLabel.Size = UDim2.new(1, -64, 0, 18)
+		titleLabel.Position = UDim2.new(0, 0, 0, 0)
+		titleLabel.BackgroundTransparency = 1
+		titleLabel.TextYAlignment = Enum.TextYAlignment.Top
+		titleLabel.Parent = frame
+		slider.titleLabel = titleLabel
+
+		local descriptionLabel = createLabel(descriptionText or "", 11, Enum.Font.Gotham, Color3.fromRGB(179, 191, 208), 18)
+		descriptionLabel.Size = UDim2.new(1, -64, 0, 30)
+		descriptionLabel.Position = UDim2.new(0, 0, 0, 18)
+		descriptionLabel.BackgroundTransparency = 1
+		descriptionLabel.TextYAlignment = Enum.TextYAlignment.Top
+		descriptionLabel.Parent = frame
+		slider.descriptionLabel = descriptionLabel
+		barTopInset = 34
+	end
+
+	local valueLabel = createLabel("72%", 11, Enum.Font.GothamBold, Color3.fromRGB(235, 240, 248), 16)
+	valueLabel.Size = UDim2.new(0, 52, 0, 16)
+	valueLabel.Position = UDim2.new(1, -52, 0, barTopInset)
+	valueLabel.BackgroundTransparency = 1
+	valueLabel.TextXAlignment = Enum.TextXAlignment.Right
+	valueLabel.Parent = frame
+
+	local bar = Instance.new("Frame")
+	bar.Size = UDim2.new(1, -64, 0, 10)
+	bar.Position = UDim2.new(0, 0, 0, barTopInset + 3)
+	bar.BackgroundColor3 = Color3.fromRGB(31, 38, 52)
+	bar.BorderSizePixel = 0
+	bar.Active = true
+	bar.Parent = frame
+	createCorner(bar, 999)
+
+	local barStroke = createStroke(bar, accentColor:Lerp(Color3.fromRGB(255, 255, 255), 0.16))
+	if barStroke then
+		barStroke.Transparency = 0.35
+	end
+
+	local fill = Instance.new("Frame")
+	fill.Size = UDim2.new(0.72, 0, 1, 0)
+	fill.BackgroundColor3 = accentColor
+	fill.BorderSizePixel = 0
+	fill.Active = false
+	fill.Parent = bar
+	createCorner(fill, 999)
+	addVerticalGradient(
+		fill,
+		accentColor:Lerp(Color3.fromRGB(255, 255, 255), 0.14),
+		accentColor:Lerp(Color3.fromRGB(0, 0, 0), 0.12)
+	)
+
+	local knob = Instance.new("Frame")
+	knob.Size = UDim2.new(0, 14, 0, 14)
+	knob.AnchorPoint = Vector2.new(0.5, 0.5)
+	knob.Position = UDim2.new(0.72, 0, 0.5, 0)
+	knob.BackgroundColor3 = Color3.fromRGB(245, 247, 250)
+	knob.BorderSizePixel = 0
+	knob.Active = false
+	knob.Parent = bar
+	createCorner(knob, 999)
+	local knobStroke = createStroke(knob, accentColor:Lerp(Color3.fromRGB(0, 0, 0), 0.25))
+	if knobStroke then
+		knobStroke.Thickness = 1.2
+	end
+
+	slider.frame = frame
+	slider.bar = bar
+	slider.fill = fill
+	slider.knob = knob
+	slider.valueLabel = valueLabel
+	slider.dragging = false
+	slider.value = 0.72
+
+	function slider:setValue(value)
+		self.value = clampUnitNumber(value, self.value)
+		self.fill.Size = UDim2.new(self.value, 0, 1, 0)
+		self.knob.Position = UDim2.new(self.value, 0, 0.5, 0)
+		self.valueLabel.Text = ("%d%%"):format(math.floor(self.value * 100 + 0.5))
+	end
+
+	local function updateFromPosition(positionX)
+		local barPosition = slider.bar.AbsolutePosition.X
+		local barWidth = math.max(slider.bar.AbsoluteSize.X, 1)
+		local alpha = clampUnitNumber((positionX - barPosition) / barWidth, slider.value)
+		slider:setValue(alpha)
+		if onChanged then
+			onChanged(alpha)
+		end
+	end
+
+	bar.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 then
+			slider.dragging = true
+			updateFromPosition(input.Position.X)
+		end
+	end)
+
+	bar.InputEnded:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 then
+			slider.dragging = false
+		end
+	end)
+
+	UserInputService.InputChanged:Connect(function(input)
+		if slider.dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+			updateFromPosition(input.Position.X)
+		end
+	end)
+
+	UserInputService.InputEnded:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 then
+			slider.dragging = false
+		end
+	end)
+
+	return slider
+end
+
+function createInlineSettingsControl(title, description, accentColor)
+	local baseColor = accentColor or Color3.fromRGB(84, 107, 146)
+
+	local card = Instance.new("Frame")
+	card.Size = UDim2.new(1, 0, 0, 0)
+	card.BackgroundColor3 = Color3.fromRGB(18, 22, 30)
+	card.BorderSizePixel = 0
+	card.AutomaticSize = Enum.AutomaticSize.Y
+	styleCard(
+		card,
+		baseColor:Lerp(Color3.fromRGB(255, 255, 255), 0.12),
+		baseColor:Lerp(Color3.fromRGB(18, 22, 30), 0.8),
+		baseColor:Lerp(Color3.fromRGB(255, 255, 255), 0.24),
+		false
+	)
+
+	local padding = Instance.new("UIPadding")
+	padding.PaddingTop = UDim.new(0, 8)
+	padding.PaddingBottom = UDim.new(0, 8)
+	padding.PaddingLeft = UDim.new(0, 10)
+	padding.PaddingRight = UDim.new(0, 10)
+	padding.Parent = card
+
+	local layout = Instance.new("UIListLayout")
+	layout.Padding = UDim.new(0, 6)
+	layout.FillDirection = Enum.FillDirection.Vertical
+	layout.Parent = card
+
+	local titleLabel = createLabel(title or "", 12, Enum.Font.GothamBold, Color3.fromRGB(240, 245, 250), 18)
+	titleLabel.Size = UDim2.new(1, 0, 0, 18)
+	titleLabel.BackgroundTransparency = 1
+	titleLabel.TextXAlignment = Enum.TextXAlignment.Left
+	titleLabel.TextYAlignment = Enum.TextYAlignment.Top
+	titleLabel.Parent = card
+
+	local descriptionLabel = createLabel(description or "", 11, Enum.Font.Gotham, Color3.fromRGB(179, 191, 208), 18)
+	descriptionLabel.Size = UDim2.new(1, 0, 0, 0)
+	descriptionLabel.BackgroundTransparency = 1
+	descriptionLabel.TextXAlignment = Enum.TextXAlignment.Left
+	descriptionLabel.TextYAlignment = Enum.TextYAlignment.Top
+	descriptionLabel.TextWrapped = true
+	descriptionLabel.AutomaticSize = Enum.AutomaticSize.Y
+	descriptionLabel.Parent = card
+
+	local content = Instance.new("Frame")
+	content.Name = "Content"
+	content.Size = UDim2.new(1, 0, 0, 0)
+	content.BackgroundTransparency = 1
+	content.AutomaticSize = Enum.AutomaticSize.Y
+	content.Parent = card
+
+	local contentLayout = Instance.new("UIListLayout")
+	contentLayout.Padding = UDim.new(0, 0)
+	contentLayout.FillDirection = Enum.FillDirection.Vertical
+	contentLayout.Parent = content
+
+	return card, titleLabel, descriptionLabel, content
+end
+
+function createSettingsOptionRow(title, accentColor)
+	local baseColor = accentColor or Color3.fromRGB(84, 107, 146)
+
+	local card = Instance.new("Frame")
+	card.Size = UDim2.new(1, 0, 0, 52)
+	card.BackgroundColor3 = Color3.fromRGB(18, 22, 30)
+	card.BorderSizePixel = 0
+	card.Parent = ui.activeSettingsGroup
+	styleCard(
+		card,
+		baseColor:Lerp(Color3.fromRGB(255, 255, 255), 0.1),
+		baseColor:Lerp(Color3.fromRGB(18, 22, 30), 0.82),
+		baseColor:Lerp(Color3.fromRGB(255, 255, 255), 0.2),
+		false
+	)
+
+	local padding = Instance.new("UIPadding")
+	padding.PaddingTop = UDim.new(0, 8)
+	padding.PaddingBottom = UDim.new(0, 8)
+	padding.PaddingLeft = UDim.new(0, 10)
+	padding.PaddingRight = UDim.new(0, 10)
+	padding.Parent = card
+
+	local titleLabel = createLabel(title or "", 12, Enum.Font.GothamBold, Color3.fromRGB(240, 245, 250), 18)
+	titleLabel.Size = UDim2.new(1, -138, 1, 0)
+	titleLabel.Position = UDim2.new(0, 0, 0, 0)
+	titleLabel.BackgroundTransparency = 1
+	titleLabel.TextXAlignment = Enum.TextXAlignment.Left
+	titleLabel.TextYAlignment = Enum.TextYAlignment.Center
+	titleLabel.Parent = card
+
+	local content = Instance.new("Frame")
+	content.Name = "Content"
+	content.Size = UDim2.new(0, 128, 1, 0)
+	content.Position = UDim2.new(1, -128, 0, 0)
+	content.BackgroundTransparency = 1
+	content.Parent = card
+
+	return card, titleLabel, content
+end
+
+function createActivityBarDecor(barFrame)
+	if not barFrame then
+		return
+	end
+
+	local overlay = Instance.new("Frame")
+	overlay.Name = "ThemeBarOverlay"
+	overlay.Size = UDim2.new(1, 0, 1, 0)
+	overlay.BackgroundTransparency = 1
+	overlay.BorderSizePixel = 0
+	overlay.ZIndex = 3
+	overlay.Parent = barFrame
+
+	local topLine = Instance.new("Frame")
+	topLine.Name = "TopLine"
+	topLine.Size = UDim2.new(1, -8, 0, 1)
+	topLine.Position = UDim2.new(0, 4, 0, 2)
+	topLine.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	topLine.BackgroundTransparency = 0.78
+	topLine.BorderSizePixel = 0
+	topLine.ZIndex = 3
+	topLine.Parent = overlay
+
+	local bottomLine = Instance.new("Frame")
+	bottomLine.Name = "BottomLine"
+	bottomLine.Size = UDim2.new(1, -8, 0, 1)
+	bottomLine.Position = UDim2.new(0, 4, 1, -3)
+	bottomLine.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	bottomLine.BackgroundTransparency = 0.82
+	bottomLine.BorderSizePixel = 0
+	bottomLine.ZIndex = 3
+	bottomLine.Parent = overlay
+
+	local glyphLabel = createLabel("", 10, Enum.Font.Code, Color3.fromRGB(232, 240, 248), 12)
+	glyphLabel.Name = "GlyphLabel"
+	glyphLabel.Size = UDim2.new(0, 130, 1, 0)
+	glyphLabel.Position = UDim2.new(1, -132, 0, 1)
+	glyphLabel.BackgroundTransparency = 1
+	glyphLabel.TextXAlignment = Enum.TextXAlignment.Right
+	glyphLabel.TextYAlignment = Enum.TextYAlignment.Center
+	glyphLabel.ZIndex = 4
+	glyphLabel.Parent = overlay
+
+	local sceneLabel = createLabel("", 10, Enum.Font.Code, Color3.fromRGB(232, 240, 248), 12)
+	sceneLabel.Name = "SceneLabel"
+	sceneLabel.Size = UDim2.new(0, 120, 1, 0)
+	sceneLabel.Position = UDim2.new(0, 8, 0, 1)
+	sceneLabel.BackgroundTransparency = 1
+	sceneLabel.TextXAlignment = Enum.TextXAlignment.Left
+	sceneLabel.TextYAlignment = Enum.TextYAlignment.Center
+	sceneLabel.ZIndex = 4
+	sceneLabel.Parent = overlay
+
+	local pulseNode = Instance.new("Frame")
+	pulseNode.Name = "PulseNode"
+	pulseNode.Size = UDim2.new(0, 10, 0, 10)
+	pulseNode.AnchorPoint = Vector2.new(0.5, 0.5)
+	pulseNode.Position = UDim2.new(0, 0, 0.5, 0)
+	pulseNode.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	pulseNode.BackgroundTransparency = 0.16
+	pulseNode.BorderSizePixel = 0
+	pulseNode.ZIndex = 4
+	pulseNode.Parent = overlay
+	createCorner(pulseNode, 999)
+
+	local segments = {}
+	for index = 1, 12 do
+		local segment = Instance.new("Frame")
+		segment.Name = "Segment" .. index
+		segment.Size = UDim2.new(0, 6, 1, -6)
+		segment.AnchorPoint = Vector2.new(0.5, 0.5)
+		segment.Position = UDim2.new((index - 0.5) / 12, 0, 0.5, 0)
+		segment.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+		segment.BackgroundTransparency = 0.86
+		segment.BorderSizePixel = 0
+		segment.ZIndex = 3
+		segment.Parent = overlay
+		createCorner(segment, 3)
+		segments[index] = segment
+	end
+
+	barFrame:SetAttribute("ThemeBarDecorReady", true)
+end
+
+function ensureActivityBarDecor(barFrame)
+	if not barFrame then
+		return nil
+	end
+	if barFrame:GetAttribute("ThemeBarDecorReady") ~= true then
+		createActivityBarDecor(barFrame)
+	end
+	local overlay = barFrame:FindFirstChild("ThemeBarOverlay")
+	if not overlay then
+		return nil
+	end
+	local segments = {}
+	for index = 1, 12 do
+		segments[index] = overlay:FindFirstChild("Segment" .. index)
+	end
+	return {
+		overlay = overlay,
+		topLine = overlay:FindFirstChild("TopLine"),
+		bottomLine = overlay:FindFirstChild("BottomLine"),
+		glyphLabel = overlay:FindFirstChild("GlyphLabel"),
+		sceneLabel = overlay:FindFirstChild("SceneLabel"),
+		pulseNode = overlay:FindFirstChild("PulseNode"),
+		segments = segments,
+	}
+end
+
 function scrollSettingsTargetIntoView(target)
 	if not ui.settingsRoot or not target or not target.Parent then
 		return
@@ -1878,8 +2889,8 @@ function createSmallBox(placeholder, defaultText)
 	box.TextYAlignment = Enum.TextYAlignment.Center
 	local padding = box:FindFirstChildOfClass("UIPadding")
 	if padding then
-		padding.PaddingTop = UDim.new(0, 0)
-		padding.PaddingBottom = UDim.new(0, 0)
+		padding.PaddingTop = UDim.new(0, 2)
+		padding.PaddingBottom = UDim.new(0, 2)
 	end
 	return box
 end
@@ -1895,6 +2906,8 @@ function createButton(text, color, themeRole)
 	button.Font = Enum.Font.GothamBold
 	button.TextSize = 12
 	button.TextWrapped = true
+	button.TextTransparency = 1
+	button.ClipsDescendants = true
 	createCorner(button, 10)
 	createStroke(button, Color3.fromRGB(33, 45, 65))
 	addVerticalGradient(
@@ -1902,12 +2915,159 @@ function createButton(text, color, themeRole)
 		color:Lerp(Color3.fromRGB(255, 255, 255), 0.12),
 		color:Lerp(Color3.fromRGB(0, 0, 0), 0.14)
 	)
+
+	local textureOverlay = Instance.new("Frame")
+	textureOverlay.Name = "ThemeTextureOverlay"
+	textureOverlay.Size = UDim2.new(1, 0, 1, 0)
+	textureOverlay.BackgroundTransparency = 1
+	textureOverlay.BorderSizePixel = 0
+	textureOverlay.Active = false
+	textureOverlay.ZIndex = 1
+	textureOverlay.Parent = button
+	createCorner(textureOverlay, 9)
+
+	local topBand = Instance.new("Frame")
+	topBand.Name = "TopBand"
+	topBand.BackgroundTransparency = 1
+	topBand.BorderSizePixel = 0
+	topBand.ZIndex = 1
+	topBand.Parent = textureOverlay
+
+	local bottomBand = Instance.new("Frame")
+	bottomBand.Name = "BottomBand"
+	bottomBand.BackgroundTransparency = 1
+	bottomBand.BorderSizePixel = 0
+	bottomBand.ZIndex = 1
+	bottomBand.Parent = textureOverlay
+
+	local leftAccent = Instance.new("Frame")
+	leftAccent.Name = "LeftAccent"
+	leftAccent.BackgroundTransparency = 1
+	leftAccent.BorderSizePixel = 0
+	leftAccent.ZIndex = 1
+	leftAccent.Parent = textureOverlay
+
+	local rightAccent = Instance.new("Frame")
+	rightAccent.Name = "RightAccent"
+	rightAccent.BackgroundTransparency = 1
+	rightAccent.BorderSizePixel = 0
+	rightAccent.ZIndex = 1
+	rightAccent.Parent = textureOverlay
+
+	local sheen = Instance.new("Frame")
+	sheen.Name = "Sheen"
+	sheen.AnchorPoint = Vector2.new(0.5, 0.5)
+	sheen.BackgroundTransparency = 1
+	sheen.BorderSizePixel = 0
+	sheen.ZIndex = 1
+	sheen.Rotation = 16
+	sheen.Parent = textureOverlay
+
+	local line1 = Instance.new("Frame")
+	line1.Name = "Line1"
+	line1.BackgroundTransparency = 1
+	line1.BorderSizePixel = 0
+	line1.ZIndex = 1
+	line1.Parent = textureOverlay
+
+	local line2 = Instance.new("Frame")
+	line2.Name = "Line2"
+	line2.BackgroundTransparency = 1
+	line2.BorderSizePixel = 0
+	line2.ZIndex = 1
+	line2.Parent = textureOverlay
+
+	local line3 = Instance.new("Frame")
+	line3.Name = "Line3"
+	line3.BackgroundTransparency = 1
+	line3.BorderSizePixel = 0
+	line3.ZIndex = 1
+	line3.Parent = textureOverlay
+
+	local vline1 = Instance.new("Frame")
+	vline1.Name = "VLine1"
+	vline1.BackgroundTransparency = 1
+	vline1.BorderSizePixel = 0
+	vline1.ZIndex = 1
+	vline1.Parent = textureOverlay
+
+	local vline2 = Instance.new("Frame")
+	vline2.Name = "VLine2"
+	vline2.BackgroundTransparency = 1
+	vline2.BorderSizePixel = 0
+	vline2.ZIndex = 1
+	vline2.Parent = textureOverlay
+
+	for index = 1, 4 do
+		local dot = Instance.new("Frame")
+		dot.Name = "Dot" .. index
+		dot.BackgroundTransparency = 1
+		dot.BorderSizePixel = 0
+		dot.ZIndex = 1
+		dot.Parent = textureOverlay
+		createCorner(dot, 2)
+	end
+
+	local shadowLabel = Instance.new("TextLabel")
+	shadowLabel.Name = "ThemeTextShadow"
+	shadowLabel.Size = UDim2.new(1, -12, 1, -6)
+	shadowLabel.Position = UDim2.new(0, 7, 0, 4)
+	shadowLabel.BackgroundTransparency = 1
+	shadowLabel.Text = button.Text
+	shadowLabel.TextColor3 = Color3.fromRGB(24, 28, 36)
+	shadowLabel.TextStrokeTransparency = 1
+	shadowLabel.TextWrapped = true
+	shadowLabel.TextXAlignment = Enum.TextXAlignment.Center
+	shadowLabel.TextYAlignment = Enum.TextYAlignment.Center
+	shadowLabel.Font = button.Font
+	shadowLabel.TextSize = button.TextSize
+	shadowLabel.ZIndex = 2
+	shadowLabel.Parent = button
+
+	local textLabel = Instance.new("TextLabel")
+	textLabel.Name = "ThemeTextLabel"
+	textLabel.Size = UDim2.new(1, -12, 1, -6)
+	textLabel.Position = UDim2.new(0, 6, 0, 3)
+	textLabel.BackgroundTransparency = 1
+	textLabel.Text = button.Text
+	textLabel.TextColor3 = button.TextColor3
+	textLabel.TextStrokeTransparency = 1
+	textLabel.TextWrapped = true
+	textLabel.TextXAlignment = Enum.TextXAlignment.Center
+	textLabel.TextYAlignment = Enum.TextYAlignment.Center
+	textLabel.Font = button.Font
+	textLabel.TextSize = button.TextSize
+	textLabel.ZIndex = 2
+	textLabel.Parent = button
+
+	button:GetPropertyChangedSignal("Text"):Connect(function()
+		shadowLabel.Text = button.Text
+		textLabel.Text = button.Text
+	end)
+	button:GetPropertyChangedSignal("TextColor3"):Connect(function()
+		textLabel.TextColor3 = button.TextColor3
+	end)
+	button:GetPropertyChangedSignal("Font"):Connect(function()
+		shadowLabel.Font = button.Font
+		textLabel.Font = button.Font
+	end)
+	button:GetPropertyChangedSignal("TextSize"):Connect(function()
+		shadowLabel.TextSize = button.TextSize
+		textLabel.TextSize = button.TextSize
+	end)
+	button:GetPropertyChangedSignal("Visible"):Connect(function()
+		shadowLabel.Visible = button.Visible
+		textLabel.Visible = button.Visible
+	end)
+
 	button:SetAttribute("ThemeRole", themeRole or "secondary")
 	table.insert(themeRegistry.buttons, {
 		instance = button,
 		role = themeRole or "secondary",
 		defaultFont = button.Font,
 	})
+	applyButtonShapeProfile(button)
+	styleButtonTextureLayer(button, color)
 	attachButtonThemeMotion(button)
 	return button
 end
@@ -1931,14 +3091,203 @@ function loadPromptHistory()
 	return history
 end
 
+function loadPromptFavorites()
+	local stored = getSetting(SETTINGS.promptFavorites, {})
+	if type(stored) ~= "table" then
+		return {}
+	end
+	local favorites = {}
+	for _, entry in ipairs(stored) do
+		if type(entry) == "string" and string.gsub(entry, "%s+", "") ~= "" then
+			table.insert(favorites, entry)
+		end
+		if #favorites >= 6 then
+			break
+		end
+	end
+	return favorites
+end
+
 local recentPromptHistory = loadPromptHistory()
+local favoritePrompts = loadPromptFavorites()
 local pendingStoreAllConfirmation = false
 local generationTexturesEnabled = getBooleanSetting(SETTINGS.textures, true)
 local generationIncludeBaseEnabled = getBooleanSetting(SETTINGS.includeBase, true)
 local generationAnchoredEnabled = getBooleanSetting(SETTINGS.anchored, true)
+local generationNamePattern = tostring(getSetting(SETTINGS.namePattern, "Prompt"))
+local generationBatchLayout = tostring(getSetting(SETTINGS.batchLayout, "Folder Only"))
 local experimentalStyleBias = tostring(getSetting(SETTINGS.experimentalStyleBias, "Off"))
+local experimentalScenePromptEnabled = getBooleanSetting(SETTINGS.experimentalScenePromptEnabled, false)
 local experimentalPreviewMode = tostring(getSetting(SETTINGS.experimentalPreviewMode, "Balanced"))
 local experimentalGroundSnap = getBooleanSetting(SETTINGS.experimentalGroundSnap, false)
+local pluginUpdateState = {
+	currentVersion = PLUGIN_VERSION,
+	latestVersion = tostring(getSetting(SETTINGS.updateLatestReleaseTag, "Not checked")),
+	latestUrl = tostring(getSetting(SETTINGS.updateLatestReleaseUrl, PLUGIN_GITHUB_RELEASES_URL)),
+	publishedAt = tostring(getSetting(SETTINGS.updateLatestReleasePublishedAt, "")),
+	lastCheckedAt = tostring(getSetting(SETTINGS.updateLastCheckedAt, "")),
+	lastStatus = tostring(getSetting(SETTINGS.updateLastStatus, "Not checked yet.")),
+	checking = false,
+	updateAvailable = false,
+}
+
+function normalizeVersionTag(tag)
+	local cleaned = tostring(tag or ""):gsub("^%s+", ""):gsub("%s+$", "")
+	cleaned = cleaned:gsub("^v", ""):gsub("^V", "")
+	return cleaned
+end
+
+function parseVersionSegments(tag)
+	local cleaned = normalizeVersionTag(tag)
+	if cleaned == "" then
+		return nil
+	end
+	local segments = {}
+	for piece in cleaned:gmatch("%d+") do
+		segments[#segments + 1] = tonumber(piece) or 0
+	end
+	if #segments == 0 then
+		return nil
+	end
+	return segments
+end
+
+function isLatestReleaseNewer(currentVersion, latestVersion)
+	local currentSegments = parseVersionSegments(currentVersion)
+	local latestSegments = parseVersionSegments(latestVersion)
+	if not currentSegments or not latestSegments then
+		return normalizeVersionTag(currentVersion) ~= "" and normalizeVersionTag(currentVersion) ~= normalizeVersionTag(latestVersion)
+	end
+	local maxCount = math.max(#currentSegments, #latestSegments)
+	for index = 1, maxCount do
+		local currentValue = currentSegments[index] or 0
+		local latestValue = latestSegments[index] or 0
+		if latestValue > currentValue then
+			return true
+		elseif latestValue < currentValue then
+			return false
+		end
+	end
+	return false
+end
+
+function updatePluginUpdateStateAvailability()
+	pluginUpdateState.updateAvailable = pluginUpdateState.latestVersion ~= "Not checked"
+		and pluginUpdateState.latestVersion ~= "No release published"
+		and isLatestReleaseNewer(pluginUpdateState.currentVersion, pluginUpdateState.latestVersion)
+end
+
+function refreshPluginUpdateUi()
+	updatePluginUpdateStateAvailability()
+	if ui.currentVersionLabel then
+		ui.currentVersionLabel.Text = "Current Plugin Version: " .. pluginUpdateState.currentVersion
+	end
+	if ui.latestVersionLabel then
+		local latestLine = "Latest GitHub Release: " .. tostring(pluginUpdateState.latestVersion or "Not checked")
+		if pluginUpdateState.publishedAt ~= "" then
+			latestLine ..= " | Published: " .. pluginUpdateState.publishedAt
+		end
+		ui.latestVersionLabel.Text = latestLine
+	end
+	if ui.updateStatusLabel then
+		local lines = {tostring(pluginUpdateState.lastStatus or "Not checked yet.")}
+		if pluginUpdateState.lastCheckedAt ~= "" then
+			lines[#lines + 1] = "Last checked: " .. pluginUpdateState.lastCheckedAt
+		end
+		ui.updateStatusLabel.Text = table.concat(lines, "\n")
+	end
+	if ui.updateReleaseUrlBox then
+		ui.updateReleaseUrlBox.Text = tostring(pluginUpdateState.latestUrl or PLUGIN_GITHUB_RELEASES_URL)
+	end
+	if ui.checkUpdatesButton then
+		ui.checkUpdatesButton.Text = pluginUpdateState.checking and "Checking GitHub..." or "Check GitHub Release"
+		setButtonThemeRole(ui.checkUpdatesButton, pluginUpdateState.checking and "warning" or "info")
+	end
+	if ui.updateReleaseButton then
+		ui.updateReleaseButton.Text = pluginUpdateState.updateAvailable and "Update Available: Manual Install Required" or "Release Install Is Manual"
+		setButtonThemeRole(ui.updateReleaseButton, pluginUpdateState.updateAvailable and "warning" or "secondary")
+	end
+end
+
+function checkLatestPluginRelease()
+	if pluginUpdateState.checking then
+		return
+	end
+	pluginUpdateState.checking = true
+	pluginUpdateState.lastStatus = "Checking GitHub releases..."
+	refreshPluginUpdateUi()
+
+	local success, responseOrError = pcall(function()
+		return HttpService:RequestAsync({
+			Url = PLUGIN_GITHUB_LATEST_RELEASE_API,
+			Method = "GET",
+			Headers = {
+				Accept = "application/vnd.github+json",
+			},
+		})
+	end)
+
+	pluginUpdateState.checking = false
+	pluginUpdateState.lastCheckedAt = os.date("%Y-%m-%d %H:%M")
+	setSetting(SETTINGS.updateLastCheckedAt, pluginUpdateState.lastCheckedAt)
+
+	if not success then
+		pluginUpdateState.lastStatus = "Update check failed. Enable HTTP requests in Studio and verify GitHub access."
+		setSetting(SETTINGS.updateLastStatus, pluginUpdateState.lastStatus)
+		refreshPluginUpdateUi()
+		setStatus("GitHub update check failed: " .. tostring(responseOrError), "error")
+		return
+	end
+
+	local response = responseOrError
+	if not response.Success then
+		if response.StatusCode == 404 then
+			pluginUpdateState.latestVersion = "No release published"
+			pluginUpdateState.latestUrl = PLUGIN_GITHUB_RELEASES_URL
+			pluginUpdateState.publishedAt = ""
+			pluginUpdateState.lastStatus = "No GitHub release is published for this repository yet."
+			setStatus(pluginUpdateState.lastStatus, "info")
+		else
+			pluginUpdateState.lastStatus = ("GitHub update check returned %s %s."):format(tostring(response.StatusCode), tostring(response.StatusMessage or ""))
+			setStatus(pluginUpdateState.lastStatus, "error")
+		end
+		setSetting(SETTINGS.updateLatestReleaseTag, pluginUpdateState.latestVersion)
+		setSetting(SETTINGS.updateLatestReleaseUrl, pluginUpdateState.latestUrl)
+		setSetting(SETTINGS.updateLatestReleasePublishedAt, pluginUpdateState.publishedAt)
+		setSetting(SETTINGS.updateLastStatus, pluginUpdateState.lastStatus)
+		refreshPluginUpdateUi()
+		return
+	end
+
+	local decodedSuccess, releaseData = pcall(function()
+		return HttpService:JSONDecode(response.Body)
+	end)
+	if not decodedSuccess or type(releaseData) ~= "table" then
+		pluginUpdateState.lastStatus = "GitHub returned an unreadable release response."
+		setSetting(SETTINGS.updateLastStatus, pluginUpdateState.lastStatus)
+		refreshPluginUpdateUi()
+		setStatus(pluginUpdateState.lastStatus, "error")
+		return
+	end
+
+	pluginUpdateState.latestVersion = tostring(releaseData.tag_name or releaseData.name or "Unknown")
+	pluginUpdateState.latestUrl = tostring(releaseData.html_url or PLUGIN_GITHUB_RELEASES_URL)
+	pluginUpdateState.publishedAt = tostring(releaseData.published_at or "")
+	updatePluginUpdateStateAvailability()
+	if pluginUpdateState.updateAvailable then
+		pluginUpdateState.lastStatus = ("Latest release %s is newer than installed version %s. Download and replace the local plugin file manually."):format(pluginUpdateState.latestVersion, pluginUpdateState.currentVersion)
+		setStatus(pluginUpdateState.lastStatus, "info")
+	else
+		pluginUpdateState.lastStatus = ("Installed version %s matches or exceeds the latest published release %s."):format(pluginUpdateState.currentVersion, pluginUpdateState.latestVersion)
+		setStatus(pluginUpdateState.lastStatus, "success")
+	end
+
+	setSetting(SETTINGS.updateLatestReleaseTag, pluginUpdateState.latestVersion)
+	setSetting(SETTINGS.updateLatestReleaseUrl, pluginUpdateState.latestUrl)
+	setSetting(SETTINGS.updateLatestReleasePublishedAt, pluginUpdateState.publishedAt)
+	setSetting(SETTINGS.updateLastStatus, pluginUpdateState.lastStatus)
+	refreshPluginUpdateUi()
+end
 
 function computeCacheKey(text)
 	local hashA = 5381
@@ -2026,6 +3375,58 @@ function pushPromptHistory(prompt)
 	end
 	recentPromptHistory = updated
 	setSetting(SETTINGS.promptHistory, recentPromptHistory)
+end
+
+function isFavoritePrompt(prompt)
+	local trimmed = tostring(prompt or ""):gsub("^%s+", ""):gsub("%s+$", "")
+	if trimmed == "" then
+		return false
+	end
+	for _, entry in ipairs(favoritePrompts) do
+		if entry == trimmed then
+			return true
+		end
+	end
+	return false
+end
+
+function addFavoritePrompt(prompt)
+	local trimmed = tostring(prompt or ""):gsub("^%s+", ""):gsub("%s+$", "")
+	if trimmed == "" then
+		return false
+	end
+
+	local updated = {trimmed}
+	for _, entry in ipairs(favoritePrompts) do
+		if entry ~= trimmed then
+			updated[#updated + 1] = entry
+		end
+		if #updated >= 6 then
+			break
+		end
+	end
+
+	favoritePrompts = updated
+	setSetting(SETTINGS.promptFavorites, favoritePrompts)
+	return true
+end
+
+function removeFavoritePrompt(prompt)
+	local trimmed = tostring(prompt or ""):gsub("^%s+", ""):gsub("%s+$", "")
+	local updated = {}
+	local removed = false
+	for _, entry in ipairs(favoritePrompts) do
+		if entry == trimmed then
+			removed = true
+		else
+			updated[#updated + 1] = entry
+		end
+	end
+	if removed then
+		favoritePrompts = updated
+		setSetting(SETTINGS.promptFavorites, favoritePrompts)
+	end
+	return removed
 end
 
 local root = Instance.new("ScrollingFrame")
@@ -2132,10 +3533,49 @@ function focusGuideStep(stepId)
 	end
 end
 
+function focusGuideTarget(targetSpec)
+	if type(targetSpec) ~= "table" then
+		return
+	end
+
+	if targetSpec.stepId then
+		focusGuideStep(targetSpec.stepId)
+		return
+	end
+
+	local panel = targetSpec.panel or "main"
+	local target = targetSpec.target
+	if not target or not target.Parent then
+		return
+	end
+
+	if panel == "settings" then
+		widget.Enabled = true
+		setSettingsPanelOpen(true)
+		task.defer(function()
+			if target and target.Parent then
+				scrollSettingsTargetIntoView(target)
+				pulseGuideFocusTarget(target)
+			end
+		end)
+		return
+	elseif panel == "preview" then
+		previewWidget.Enabled = true
+	else
+		widget.Enabled = true
+		settingsWidget.Enabled = false
+	end
+
+	if panel == "main" then
+		scrollMainTargetIntoView(target)
+	end
+	pulseGuideFocusTarget(target)
+end
+
 do
-	local promptTitle = createSectionTitle("Prompt")
-	promptTitle.LayoutOrder = 14
-	promptTitle.Parent = root
+	ui.promptTitle = createSectionTitle("Prompt")
+	ui.promptTitle.LayoutOrder = 14
+	ui.promptTitle.Parent = root
 end
 
 ui.promptBox = createTextBox(
@@ -2148,6 +3588,35 @@ ui.promptBox.MultiLine = true
 ui.promptBox.TextWrapped = true
 ui.promptBox.LayoutOrder = 15
 ui.promptBox.Parent = root
+
+ui.scenePromptTitle = createSectionTitle("Scene Direction")
+ui.scenePromptTitle.LayoutOrder = 16
+ui.scenePromptTitle.Visible = experimentalScenePromptEnabled
+ui.scenePromptTitle.Parent = root
+
+ui.scenePromptBox = createTextBox(
+	96,
+	"Scene brief: ruined harbor at dawn with fishing boats, wet stone docks, crates, gulls, and layered fog",
+	tostring(getSetting(SETTINGS.experimentalScenePrompt, "")),
+	Enum.Font.Code
+)
+ui.scenePromptBox.MultiLine = true
+ui.scenePromptBox.TextWrapped = true
+ui.scenePromptBox.LayoutOrder = 17
+ui.scenePromptBox.Visible = experimentalScenePromptEnabled
+ui.scenePromptBox.Parent = root
+
+ui.scenePromptHelp = createLabel(
+	"Experimental. Treats the main prompt as required scene elements and this box as the overall scene brief so preview and generation attempt a full contextual setup.",
+	12,
+	Enum.Font.Gotham,
+	Color3.fromRGB(157, 168, 183),
+	30
+)
+ui.scenePromptHelp.LayoutOrder = 18
+ui.scenePromptHelp.Visible = experimentalScenePromptEnabled
+enableAutoHeightLabel(ui.scenePromptHelp, 24)
+ui.scenePromptHelp.Parent = root
 
 do
 	local detailTitle = createSectionTitle("Detail Level")
@@ -2297,6 +3766,7 @@ guideRoot.AutomaticCanvasSize = Enum.AutomaticSize.Y
 guideRoot.CanvasSize = UDim2.new()
 guideRoot.ScrollBarThickness = 6
 guideRoot.Parent = guideWidget
+ui.guideRoot = guideRoot
 addVerticalGradient(guideRoot, Color3.fromRGB(42, 52, 72), Color3.fromRGB(24, 31, 44))
 table.insert(themeRegistry.roots, {instance = guideRoot})
 
@@ -2328,6 +3798,7 @@ settingsPanelSubtitle.Parent = settingsRoot
 
 local guidePanelTitle = createLabel("Guidebook", 18, Enum.Font.GothamBold, Color3.fromRGB(245, 247, 250), 24)
 guidePanelTitle.Parent = guideRoot
+ui.guidePanelTitle = guidePanelTitle
 
 local guidePanelSubtitle = createLabel(
 	"Use this as the in-plugin walkthrough for building a model from prompt to final stored asset.",
@@ -2338,6 +3809,7 @@ local guidePanelSubtitle = createLabel(
 )
 enableAutoHeightLabel(guidePanelSubtitle, 24)
 guidePanelSubtitle.Parent = guideRoot
+ui.guidePanelSubtitle = guidePanelSubtitle
 
 do
 	local function createGuideCard(topColor, bottomColor, strokeColor)
@@ -2635,6 +4107,560 @@ do
 	addGuideTipStrip()
 end
 
+function clearProceduralGuidebook()
+	if not ui.guideRoot then
+		return
+	end
+	for _, child in ipairs(ui.guideRoot:GetChildren()) do
+		if child ~= ui.guidePanelTitle
+			and child ~= ui.guidePanelSubtitle
+			and not child:IsA("UIListLayout")
+			and not child:IsA("UIPadding") then
+			child:Destroy()
+		end
+	end
+end
+
+function createProceduralGuideCard(topColor, bottomColor, strokeColor)
+	local card = Instance.new("Frame")
+	card.Size = UDim2.new(1, 0, 0, 0)
+	card.BackgroundColor3 = Color3.fromRGB(20, 24, 32)
+	card.BorderSizePixel = 0
+	card.AutomaticSize = Enum.AutomaticSize.Y
+	card.Parent = ui.guideRoot
+	card:SetAttribute("ProceduralGuidebookNode", true)
+	styleCard(card, topColor, bottomColor, strokeColor, false)
+
+	local padding = Instance.new("UIPadding")
+	padding.PaddingTop = UDim.new(0, 10)
+	padding.PaddingBottom = UDim.new(0, 10)
+	padding.PaddingLeft = UDim.new(0, 10)
+	padding.PaddingRight = UDim.new(0, 10)
+	padding.Parent = card
+
+	local layout = Instance.new("UIListLayout")
+	layout.Padding = UDim.new(0, 8)
+	layout.FillDirection = Enum.FillDirection.Vertical
+	layout.Parent = card
+	return card
+end
+
+function addProceduralGuideBadge(parent, text, color, role)
+	local badge = createButton(text, color, role)
+	badge.AutoButtonColor = false
+	badge.Active = false
+	badge.Selectable = false
+	badge.Size = UDim2.new(0, math.max(84, #text * 7 + 24), 0, 28)
+	badge.TextSize = 11
+	badge.Parent = parent
+	return badge
+end
+
+function addProceduralGuideFeature(title, accentColor, role, summary, items)
+	if not items or #items == 0 then
+		return
+	end
+	local card = createProceduralGuideCard(
+		accentColor:Lerp(Color3.fromRGB(255, 255, 255), 0.16),
+		accentColor:Lerp(Color3.fromRGB(18, 22, 28), 0.72),
+		accentColor:Lerp(Color3.fromRGB(255, 255, 255), 0.22)
+	)
+
+	local headerRow = Instance.new("Frame")
+	headerRow.Size = UDim2.new(1, 0, 0, 30)
+	headerRow.BackgroundTransparency = 1
+	headerRow.Parent = card
+
+	local badge = addProceduralGuideBadge(headerRow, title, accentColor, role)
+	badge.Position = UDim2.new(0, 0, 0, 0)
+
+	local summaryLabel = createLabel(summary, 12, Enum.Font.Gotham, Color3.fromRGB(216, 223, 232), 24)
+	enableAutoHeightLabel(summaryLabel, 24)
+	summaryLabel.Parent = card
+
+	local itemList = Instance.new("Frame")
+	itemList.Size = UDim2.new(1, 0, 0, 0)
+	itemList.BackgroundTransparency = 1
+	itemList.AutomaticSize = Enum.AutomaticSize.Y
+	itemList.Parent = card
+
+	local itemLayout = Instance.new("UIListLayout")
+	itemLayout.Padding = UDim.new(0, 6)
+	itemLayout.FillDirection = Enum.FillDirection.Vertical
+	itemLayout.Parent = itemList
+
+	for _, item in ipairs(items) do
+		local itemRow = Instance.new("Frame")
+		itemRow.Size = UDim2.new(1, 0, 0, 0)
+		itemRow.BackgroundColor3 = Color3.fromRGB(23, 28, 36)
+		itemRow.BorderSizePixel = 0
+		itemRow.AutomaticSize = Enum.AutomaticSize.Y
+		itemRow.Parent = itemList
+		styleCard(itemRow, Color3.fromRGB(48, 56, 70), Color3.fromRGB(27, 32, 40), Color3.fromRGB(90, 104, 128), false)
+
+		local itemPadding = Instance.new("UIPadding")
+		itemPadding.PaddingTop = UDim.new(0, 8)
+		itemPadding.PaddingBottom = UDim.new(0, 8)
+		itemPadding.PaddingLeft = UDim.new(0, 8)
+		itemPadding.PaddingRight = UDim.new(0, 8)
+		itemPadding.Parent = itemRow
+
+		local itemLayoutInner = Instance.new("UIListLayout")
+		itemLayoutInner.Padding = UDim.new(0, 4)
+		itemLayoutInner.FillDirection = Enum.FillDirection.Vertical
+		itemLayoutInner.SortOrder = Enum.SortOrder.LayoutOrder
+		itemLayoutInner.Parent = itemRow
+
+		local targetSpec = item[3]
+		if targetSpec then
+			local actionRow = Instance.new("Frame")
+			actionRow.Size = UDim2.new(1, 0, 0, 28)
+			actionRow.BackgroundTransparency = 1
+			actionRow.LayoutOrder = 1
+			actionRow.Parent = itemRow
+
+			local focusButton = createButton("Show Me", accentColor, role)
+			focusButton.Size = UDim2.new(0, 110, 1, 0)
+			focusButton.Parent = actionRow
+			focusButton.MouseButton1Click:Connect(function()
+				focusGuideTarget(targetSpec)
+			end)
+		end
+
+		local nameLabel = createLabel(item[1], 13, Enum.Font.GothamBold, Color3.fromRGB(245, 247, 250), 20)
+		enableAutoHeightLabel(nameLabel, 20)
+		nameLabel.LayoutOrder = targetSpec and 2 or 1
+		nameLabel.Parent = itemRow
+
+		local descLabel = createLabel(item[2], 12, Enum.Font.Gotham, Color3.fromRGB(177, 188, 203), 22)
+		enableAutoHeightLabel(descLabel, 22)
+		descLabel.LayoutOrder = targetSpec and 3 or 2
+		descLabel.Parent = itemRow
+	end
+end
+
+function rebuildGuidebook()
+	if not ui.guideRoot then
+		return
+	end
+
+	clearProceduralGuidebook()
+
+	local stepItems = {}
+	local orderedSteps = {
+		{"step_prompt", "STEP 1", "Preset + Prompt", "Use the detail preset buttons and prompt box to define the model direction before touching the technical controls."},
+		{"step_inputs", "STEP 2", "Tune Inputs", "Adjust size, triangle budget, schema, collider mode, seed, and generation toggles to shape cost, look, and repeatability."},
+		{"step_preview", "STEP 3", "Preview", "Use preview first when available so you can validate silhouette, lighting, bounds, and collision before full generation."},
+		{"step_generate", "STEP 4", "Generate", "Run the full generation pass once the request looks correct or regenerate the selected output when iterating."},
+		{"step_store", "STEP 5", "Store", "Store only the variants you want available during play mode and use the storage tools to review or prune outputs."},
+	}
+	for _, step in ipairs(orderedSteps) do
+		if ui.guideFocusGroups[step[1]] and #ui.guideFocusGroups[step[1]] > 0 then
+			stepItems[#stepItems + 1] = {step[2] .. " " .. step[3], step[4], {stepId = step[1]}}
+		end
+	end
+	addProceduralGuideFeature(
+		"Workflow",
+		Color3.fromRGB(75, 114, 96),
+		"success",
+		"This walkthrough is assembled from the actual interactive areas currently present in the plugin.",
+		stepItems
+	)
+
+	local requestItems = {}
+	if ui.promptBox then
+		requestItems[#requestItems + 1] = {"Prompt Box", "Describe the object, major materials, silhouette, and standout details. The live request preview reflects the current input state.", {panel = "main", target = ui.promptBox}}
+	end
+	if ui.scenePromptBox and ui.scenePromptBox.Visible then
+		requestItems[#requestItems + 1] = {"Scene Direction", "Add optional scene context when you want preview and generation to attempt a broader described environment around the subject.", {panel = "main", target = ui.scenePromptBox}}
+	end
+	if ui.mediumButton and ui.highButton and ui.ultraButton then
+		requestItems[#requestItems + 1] = {"Detail Presets", "Medium, High, and Ultra provide quick triangle/detail starting points for exploration versus heavier output.", {panel = "main", target = ui.presetFrame}}
+	end
+	if ui.sizeBox and ui.trianglesBox then
+		requestItems[#requestItems + 1] = {"Scale + Complexity", "Size controls overall scale while MaxTriangles sets the complexity ceiling for generation and preview budgets.", {panel = "main", target = ui.sizeBox}}
+	end
+	if ui.texturesToggleButton or ui.includeBaseToggleButton or ui.anchoredToggleButton then
+		requestItems[#requestItems + 1] = {"Generation Toggles", "Texture generation, base inclusion, and anchored output are available directly on the main canvas for fast iteration.", {panel = "main", target = ui.texturesToggleButton or ui.includeBaseToggleButton or ui.anchoredToggleButton}}
+	end
+	addProceduralGuideFeature(
+		"Request Setup",
+		Color3.fromRGB(79, 133, 177),
+		"info",
+		"These controls define what gets sent to Roblox when you preview or generate.",
+		requestItems
+	)
+
+	local actionItems = {}
+	if ui.schemaBox then
+		actionItems[#actionItems + 1] = {"Schema", "The schema field controls which Roblox generation schema name is used for the request.", {panel = "main", target = ui.schemaBox}}
+	end
+	if ui.colliderModeBox then
+		actionItems[#actionItems + 1] = {"Collider Mode", "Collider mode determines how collision proxies are produced and how collision preview behaves.", {panel = "main", target = ui.colliderModeBox}}
+	end
+	if ui.seedBox or ui.randomSeedButton then
+		actionItems[#actionItems + 1] = {"Seed Controls", "Reuse the current seed for consistency or randomize it for a new variation family.", {panel = "main", target = ui.seedBox or ui.randomSeedButton}}
+	end
+	if ui.previewButton then
+		actionItems[#actionItems + 1] = {"Preview Button", "Preview uses the lighter preview budget so you can inspect candidates before committing to the full pass.", {panel = "main", target = ui.previewButton}}
+	end
+	if ui.generateButton or ui.regenerateSelectedButton then
+		actionItems[#actionItems + 1] = {"Generate Actions", "Generate creates the full output, while Regenerate Selected reuses saved metadata from an existing generated model.", {panel = "main", target = ui.generateButton or ui.regenerateSelectedButton}}
+	end
+	addProceduralGuideFeature(
+		"Generation Actions",
+		Color3.fromRGB(62, 162, 109),
+		"success",
+		"The plugin exposes both exploratory and commit-stage generation tools.",
+		actionItems
+	)
+
+	local previewItems = {}
+	if ui.previewGenerateCurrentButton or ui.previewGenerateSelectedButton or ui.previewGenerateAllButton then
+		previewItems[#previewItems + 1] = {"Preview Variant Actions", "Generate the current variant, selected variants, or the full preview batch directly from the preview panel.", {panel = "preview", target = ui.previewGenerateCurrentButton or ui.previewGenerateSelectedButton or ui.previewGenerateAllButton}}
+	end
+	if ui.previewFrontButton and ui.previewSideButton and ui.previewTopButton and ui.previewIsoButton then
+		previewItems[#previewItems + 1] = {"Camera Presets", "Front, side, top, and isometric views help verify readability and bounding fit quickly.", {panel = "preview", target = ui.previewFrontButton}}
+	end
+	if ui.previewLightingButton or ui.previewBackgroundButton or ui.previewRotateSpeedButton then
+		previewItems[#previewItems + 1] = {"Look Development", "Lighting, background, and auto-rotation speed controls let you inspect the result under multiple viewing conditions.", {panel = "preview", target = ui.previewLightingButton or ui.previewBackgroundButton or ui.previewRotateSpeedButton}}
+	end
+	if ui.previewOriginMarkerButton or ui.previewBoundsButton or ui.previewCollisionOpacityButton or collisionPreviewButton then
+		previewItems[#previewItems + 1] = {"Validation Overlays", "Origin, bounds, collision opacity, and collision preview tools are available for technical inspection before storing or shipping a model.", {panel = "preview", target = ui.previewOriginMarkerButton or ui.previewBoundsButton or ui.previewCollisionOpacityButton or collisionPreviewButton}}
+	end
+	addProceduralGuideFeature(
+		"Preview Panel",
+		Color3.fromRGB(126, 84, 148),
+		"purple",
+		"The preview window acts as a turntable, comparison gallery, and technical validation station.",
+		previewItems
+	)
+
+	local storageItems = {}
+	if ui.runtimeButton or ui.runtimeAllButton then
+		storageItems[#storageItems + 1] = {"Runtime Storage", "Store Selected Model and Store All Models move approved outputs into the runtime regeneration workflow.", {panel = "main", target = ui.runtimeButton or ui.runtimeAllButton}}
+	end
+	if ui.toggleStorageButton then
+		storageItems[#storageItems + 1] = {"Stored Model Review", "Show Stored Models reveals what has already been saved into the runtime storage pipeline.", {panel = "main", target = ui.toggleStorageButton}}
+	end
+	if ui.cacheToggleButton or ui.clearCacheButton then
+		storageItems[#storageItems + 1] = {"Cache Controls", "The settings panel exposes cache reuse and cache clearing so identical requests can be reused or fully rebuilt.", {panel = "settings", target = ui.cacheToggleButton or ui.clearCacheButton}}
+	end
+	addProceduralGuideFeature(
+		"Storage + Iteration",
+		Color3.fromRGB(201, 141, 78),
+		"warning",
+		"These tools control what persists beyond the current experiment and how much iteration history you keep around.",
+		storageItems
+	)
+
+	local settingsItems = {}
+	local orderedSections = {"settings", "prompt_tools", "theme_style", "experimental"}
+	for _, sectionId in ipairs(orderedSections) do
+		local section = ui.settingsSearchSections[sectionId]
+		if section and section.header then
+			local titleText = tostring(section.header.Text or sectionId)
+			local detailText = section.helper and tostring(section.helper.Text or "") or ""
+			if detailText == "" then
+				detailText = "Open the settings panel to review the controls in this section."
+			end
+			settingsItems[#settingsItems + 1] = {titleText, detailText, {panel = "settings", target = section.header}}
+		end
+	end
+	addProceduralGuideFeature(
+		"Settings Map",
+		Color3.fromRGB(84, 107, 146),
+		"info",
+		"The guidebook reads the current settings sections so it can explain the same groups available in the settings panel.",
+		settingsItems
+	)
+
+	local experimentItems = {}
+	if ui.experimentalStyleBiasButton then
+		experimentItems[#experimentItems + 1] = {tostring(ui.experimentalStyleBiasButton.Text), "Bias the output direction toward categories like realistic, stylized, hard-surface, organic, or toy-like forms when supported.", {panel = "settings", target = ui.experimentalStyleBiasButton}}
+	end
+	if ui.experimentalPreviewModeButton then
+		experimentItems[#experimentItems + 1] = {tostring(ui.experimentalPreviewModeButton.Text), "Change how aggressive preview simplification should be, trading speed against fidelity.", {panel = "settings", target = ui.experimentalPreviewModeButton}}
+	end
+	if ui.experimentalGroundSnapButton then
+		experimentItems[#experimentItems + 1] = {tostring(ui.experimentalGroundSnapButton.Text), "Place generated output with its base aligned to the ground plane instead of centering the pivot at the origin.", {panel = "settings", target = ui.experimentalGroundSnapButton}}
+	end
+	if #experimentItems > 0 then
+		addProceduralGuideFeature(
+			"Experimental Controls",
+			Color3.fromRGB(133, 74, 62),
+			"warning",
+			"Experimental tools are generated from the controls currently exposed in the experimental settings section.",
+			experimentItems
+		)
+	end
+end
+
+function clearProceduralSettingsOverview()
+	if not ui.settingsProceduralFrame then
+		return
+	end
+	for _, child in ipairs(ui.settingsProceduralFrame:GetChildren()) do
+		if not child:IsA("UIListLayout") and not child:IsA("UIPadding") then
+			child:Destroy()
+		end
+	end
+end
+
+function createProceduralSettingsCard(topColor, bottomColor, strokeColor)
+	local card = Instance.new("Frame")
+	card.Size = UDim2.new(1, 0, 0, 0)
+	card.BackgroundColor3 = Color3.fromRGB(20, 24, 32)
+	card.BorderSizePixel = 0
+	card.AutomaticSize = Enum.AutomaticSize.Y
+	card.Parent = ui.settingsProceduralFrame
+	styleCard(card, topColor, bottomColor, strokeColor, false)
+
+	local padding = Instance.new("UIPadding")
+	padding.PaddingTop = UDim.new(0, 10)
+	padding.PaddingBottom = UDim.new(0, 10)
+	padding.PaddingLeft = UDim.new(0, 10)
+	padding.PaddingRight = UDim.new(0, 10)
+	padding.Parent = card
+
+	local layout = Instance.new("UIListLayout")
+	layout.Padding = UDim.new(0, 8)
+	layout.FillDirection = Enum.FillDirection.Vertical
+	layout.Parent = card
+	return card
+end
+
+function addProceduralSettingsFeature(title, accentColor, role, summary, items)
+	if not ui.settingsProceduralFrame or not items or #items == 0 then
+		return
+	end
+
+	local card = createProceduralSettingsCard(
+		accentColor:Lerp(Color3.fromRGB(255, 255, 255), 0.16),
+		accentColor:Lerp(Color3.fromRGB(18, 22, 28), 0.72),
+		accentColor:Lerp(Color3.fromRGB(255, 255, 255), 0.22)
+	)
+
+	local headerRow = Instance.new("Frame")
+	headerRow.Size = UDim2.new(1, 0, 0, 30)
+	headerRow.BackgroundTransparency = 1
+	headerRow.Parent = card
+
+	local badge = createButton(title, accentColor, role)
+	badge.AutoButtonColor = false
+	badge.Active = false
+	badge.Selectable = false
+	badge.Size = UDim2.new(0, math.max(110, #title * 7 + 24), 0, 28)
+	badge.TextSize = 11
+	badge.Parent = headerRow
+
+	local summaryLabel = createLabel(summary, 12, Enum.Font.Gotham, Color3.fromRGB(216, 223, 232), 24)
+	enableAutoHeightLabel(summaryLabel, 24)
+	summaryLabel.Parent = card
+
+	for _, item in ipairs(items) do
+		local itemRow = Instance.new("Frame")
+		itemRow.Size = UDim2.new(1, 0, 0, 0)
+		itemRow.BackgroundColor3 = Color3.fromRGB(23, 28, 36)
+		itemRow.BorderSizePixel = 0
+		itemRow.AutomaticSize = Enum.AutomaticSize.Y
+		itemRow.Parent = card
+		styleCard(itemRow, Color3.fromRGB(48, 56, 70), Color3.fromRGB(27, 32, 40), Color3.fromRGB(90, 104, 128), false)
+
+		local itemPadding = Instance.new("UIPadding")
+		itemPadding.PaddingTop = UDim.new(0, 8)
+		itemPadding.PaddingBottom = UDim.new(0, 8)
+		itemPadding.PaddingLeft = UDim.new(0, 8)
+		itemPadding.PaddingRight = UDim.new(0, 8)
+		itemPadding.Parent = itemRow
+
+		local itemLayout = Instance.new("UIListLayout")
+		itemLayout.Padding = UDim.new(0, 4)
+		itemLayout.FillDirection = Enum.FillDirection.Vertical
+		itemLayout.SortOrder = Enum.SortOrder.LayoutOrder
+		itemLayout.Parent = itemRow
+
+		local target = item.target
+		if target and target.Parent then
+			local actionRow = Instance.new("Frame")
+			actionRow.Size = UDim2.new(1, 0, 0, 28)
+			actionRow.BackgroundTransparency = 1
+			actionRow.LayoutOrder = 1
+			actionRow.Parent = itemRow
+
+			local focusButton = createButton("Show Me", accentColor, role)
+			focusButton.Size = UDim2.new(0, 110, 1, 0)
+			focusButton.Parent = actionRow
+			focusButton.MouseButton1Click:Connect(function()
+				scrollSettingsTargetIntoView(target)
+				pulseGuideFocusTarget(target)
+			end)
+		end
+
+		local nameLabel = createLabel(item.title or "Setting", 13, Enum.Font.GothamBold, Color3.fromRGB(245, 247, 250), 20)
+		enableAutoHeightLabel(nameLabel, 20)
+		nameLabel.LayoutOrder = target and 2 or 1
+		nameLabel.Parent = itemRow
+
+		local descLabel = createLabel(item.description or "", 12, Enum.Font.Gotham, Color3.fromRGB(177, 188, 203), 22)
+		enableAutoHeightLabel(descLabel, 22)
+		descLabel.LayoutOrder = target and 3 or 2
+		descLabel.Parent = itemRow
+	end
+end
+
+function rebuildProceduralSettingsOverview()
+	if not ui.settingsProceduralFrame then
+		return
+	end
+
+	clearProceduralSettingsOverview()
+
+	local overviewTitle = createLabel("Settings Navigator", 18, Enum.Font.GothamBold, Color3.fromRGB(245, 247, 250), 24)
+	enableAutoHeightLabel(overviewTitle, 24)
+	overviewTitle.Parent = ui.settingsProceduralFrame
+
+	local overviewHelp = createLabel(
+		"This settings layer is assembled from the live controls below so it stays aligned with the actual plugin state.",
+		12,
+		Enum.Font.Gotham,
+		Color3.fromRGB(171, 183, 199),
+		24
+	)
+	enableAutoHeightLabel(overviewHelp, 24)
+	overviewHelp.Parent = ui.settingsProceduralFrame
+
+	local coreItems = {}
+	if ui.cacheToggleButton then
+		coreItems[#coreItems + 1] = {title = tostring(ui.cacheToggleButton.Text), description = "Reuse identical preview and generation requests instead of rebuilding every time.", target = ui.cacheToggleButton}
+	end
+	if ui.clearCacheButton then
+		coreItems[#coreItems + 1] = {title = tostring(ui.clearCacheButton.Text), description = "Flush stored preview and generation cache entries and force clean rebuilds.", target = ui.clearCacheButton}
+	end
+	if ui.autoOpenPreviewButton then
+		coreItems[#coreItems + 1] = {title = tostring(ui.autoOpenPreviewButton.Text), description = "Control whether the preview dock opens automatically after full generation.", target = ui.autoOpenPreviewButton}
+	end
+	if ui.uiAudioToggleButton then
+		coreItems[#coreItems + 1] = {title = tostring(ui.uiAudioToggleButton.Text), description = "Toggle smaller UI sound effects and adjust their loudness with the slider.", target = ui.uiAudioToggleButton}
+	end
+	if ui.themeChangeAudioToggleButton then
+		coreItems[#coreItems + 1] = {title = tostring(ui.themeChangeAudioToggleButton.Text), description = "Toggle theme-change audio and tune how strong theme transition cues feel.", target = ui.themeChangeAudioToggleButton}
+	end
+	if ui.showAdvancedCollisionButton then
+		coreItems[#coreItems + 1] = {title = tostring(ui.showAdvancedCollisionButton.Text), description = "Expose or hide the extra collision heuristic controls in the main panel.", target = ui.showAdvancedCollisionButton}
+	end
+	if ui.confirmStoreAllButton then
+		coreItems[#coreItems + 1] = {title = tostring(ui.confirmStoreAllButton.Text), description = "Require a confirmation before storing every generated result into runtime storage.", target = ui.confirmStoreAllButton}
+	end
+	if ui.historyLogBox then
+		coreItems[#coreItems + 1] = {title = "Prompt History Log", description = "Review the recent prompt log without leaving the settings area.", target = ui.historyLogBox}
+	end
+	addProceduralSettingsFeature(
+		"Core Settings",
+		Color3.fromRGB(84, 107, 146),
+		"info",
+		"Core behavior, cache, audio, confirmation, and history tools are summarized from the current settings controls.",
+		coreItems
+	)
+
+	local promptItems = {}
+	if ui.favoritePromptButton then
+		promptItems[#promptItems + 1] = {title = tostring(ui.favoritePromptButton.Text), description = "Store the current prompt into the reusable prompt library.", target = ui.favoritePromptButton}
+	end
+	if ui.unfavoritePromptButton then
+		promptItems[#promptItems + 1] = {title = tostring(ui.unfavoritePromptButton.Text), description = "Remove the currently loaded prompt from favorites.", target = ui.unfavoritePromptButton}
+	end
+	if ui.favoritePromptButtons and ui.favoritePromptButtons[1] then
+		promptItems[#promptItems + 1] = {title = "Favorite Prompt Slots", description = "Quick-load the prompts you saved into the favorite slots.", target = ui.favoritePromptButtons[1]}
+	end
+	if ui.recentPromptButtons and ui.recentPromptButtons[1] then
+		promptItems[#promptItems + 1] = {title = "Recent Prompt Reloads", description = "Reload one of the most recent prompts directly back into the main canvas.", target = ui.recentPromptButtons[1]}
+	end
+	if ui.namePatternButton then
+		promptItems[#promptItems + 1] = {title = tostring(ui.namePatternButton.Text), description = "Choose how generated outputs are named when batches are created.", target = ui.namePatternButton}
+	end
+	if ui.batchLayoutButton then
+		promptItems[#promptItems + 1] = {title = tostring(ui.batchLayoutButton.Text), description = "Change how variation batches are arranged or grouped after generation.", target = ui.batchLayoutButton}
+	end
+	addProceduralSettingsFeature(
+		"Prompt Library",
+		Color3.fromRGB(57, 128, 116),
+		"success",
+		"Reusable prompts, reload shortcuts, naming, and batch organization are built from the current prompt tooling controls.",
+		promptItems
+	)
+
+	local themeItems = {}
+	if themeUi.variantButton then
+		themeItems[#themeItems + 1] = {title = tostring(themeUi.variantButton.Text), description = "Shift the active theme toward softer, louder, or darker structural styling.", target = themeUi.variantButton}
+	end
+	if themeUi.toneButton then
+		themeItems[#themeItems + 1] = {title = tostring(themeUi.toneButton.Text), description = "Apply a global tonal bias such as cool, warm, verdant, or neon.", target = themeUi.toneButton}
+	end
+	if themeUi.contrastButton then
+		themeItems[#themeItems + 1] = {title = tostring(themeUi.contrastButton.Text), description = "Control how separated and punchy the interface feels.", target = themeUi.contrastButton}
+	end
+	if themeUi.typographyButton then
+		themeItems[#themeItems + 1] = {title = tostring(themeUi.typographyButton.Text), description = "Swap typography direction without changing the base theme preset.", target = themeUi.typographyButton}
+	end
+	if themeUi.resetStylingButton then
+		themeItems[#themeItems + 1] = {title = tostring(themeUi.resetStylingButton.Text), description = "Reset the styling stack back to the base theme defaults.", target = themeUi.resetStylingButton}
+	end
+	addProceduralSettingsFeature(
+		"Theme Styling",
+		Color3.fromRGB(126, 84, 148),
+		"purple",
+		"The current theme lab options are pulled from the live styling controls below.",
+		themeItems
+	)
+
+	local experimentalItems = {}
+	if ui.experimentalNegativePromptBox then
+		experimentalItems[#experimentalItems + 1] = {title = "Negative Prompt", description = "Tell the generator what to avoid when shaping the final result.", target = ui.experimentalNegativePromptBox}
+	end
+	if ui.experimentalScenePromptButton then
+		experimentalItems[#experimentalItems + 1] = {title = tostring(ui.experimentalScenePromptButton.Text), description = "Expose an extra scene-direction field in the main panel for broader environment attempts.", target = ui.experimentalScenePromptButton}
+	end
+	if ui.experimentalStyleBiasButton then
+		experimentalItems[#experimentalItems + 1] = {title = tostring(ui.experimentalStyleBiasButton.Text), description = "Bias the generated result toward a particular visual family.", target = ui.experimentalStyleBiasButton}
+	end
+	if ui.experimentalPreviewModeButton then
+		experimentalItems[#experimentalItems + 1] = {title = tostring(ui.experimentalPreviewModeButton.Text), description = "Trade preview speed against fidelity before running the final pass.", target = ui.experimentalPreviewModeButton}
+	end
+	if ui.experimentalGroundSnapButton then
+		experimentalItems[#experimentalItems + 1] = {title = tostring(ui.experimentalGroundSnapButton.Text), description = "Align the generated model base to the ground plane at origin.", target = ui.experimentalGroundSnapButton}
+	end
+	addProceduralSettingsFeature(
+		"Experimental",
+		Color3.fromRGB(133, 74, 62),
+		"warning",
+		"Experimental controls are generated from whichever advanced options are currently exposed in the settings panel.",
+		experimentalItems
+	)
+
+	local licensingItems = {
+		{
+			title = "Plugin Ownership",
+			description = "This plugin implementation, interface, workflow, and tool design belong to the plugin creator. This section does not claim ownership over Roblox platform technology."
+		},
+		{
+			title = "Roblox Cube 3D Attribution",
+			description = "Model generation relies on Roblox generation technology, including Cube 3D capabilities and related Roblox services, which remain Roblox technology and are governed by Roblox platform terms."
+		},
+		{
+			title = "Rights + Responsibility",
+			description = "Prompt content, generated assets, trademark usage, and platform deployment remain subject to Roblox terms, community standards, and any applicable third-party rights."
+		},
+	}
+	addProceduralSettingsFeature(
+		"Licensing + Attribution",
+		Color3.fromRGB(171, 137, 93),
+		"warning",
+		"Ownership and attribution notes for the plugin implementation and the Roblox-powered generation stack it uses.",
+		licensingItems
+	)
+end
+
 ui.settingsPanel = Instance.new("Frame")
 ui.settingsPanel.Size = UDim2.new(1, 0, 0, 0)
 ui.settingsPanel.BackgroundColor3 = Color3.fromRGB(20, 24, 32)
@@ -2699,139 +4725,409 @@ enableAutoHeightLabel(ui.settingsSearchEmptyLabel, 20)
 ui.settingsSearchEmptyLabel.Visible = false
 ui.settingsSearchEmptyLabel.Parent = settingsSearchGroup
 
-local settingsGroup, settingsSectionTitle, settingsSectionHelp = createSettingsGroup(
-	"Settings",
-	"Core plugin behavior, cache, preview defaults, and prompt history tools."
-)
-settingsGroup.LayoutOrder = 2
-registerSettingsSection("settings", settingsSectionTitle, "settings cache behavior preview history core options", settingsSectionHelp)
-ui.settingsSearchSections.settings.container = settingsGroup
-ui.activeSettingsGroup = settingsGroup
-
-local cacheTitle = createSectionTitle("Generation Cache")
-cacheTitle.Size = UDim2.new(1, 0, 0, 18)
-cacheTitle.Parent = ui.activeSettingsGroup
-registerSettingsSearchEntry(cacheTitle, "generation cache cached models preview generate reuse", "settings")
-
-local cacheToggleTitle, cacheToggleHelp = createSettingsItem(
-	"Reuse Cached Results",
-	"Reuses identical preview and generate requests so repeated runs can open faster."
-)
-registerSettingsSearchEntry(cacheToggleTitle, "reuse cached results cache enable disable generation preview", "settings")
-registerSettingsSearchEntry(cacheToggleHelp, "reuse cached results cache enable disable generation preview", "settings")
-
-ui.cacheToggleButton = createButton("Cache: Off", Color3.fromRGB(86, 99, 125), "muted")
-ui.cacheToggleButton.Size = UDim2.new(1, 0, 0, 34)
-ui.cacheToggleButton.Parent = ui.activeSettingsGroup
-registerSettingsSearchEntry(ui.cacheToggleButton, "cache enable disable cached models generation cache", "settings", true)
-registerSettingsShortcut("Reuse Cached Results", ui.cacheToggleButton, "cache reuse cached results enable disable generation preview", "settings")
-
-local clearCacheTitle, clearCacheHelp = createSettingsItem(
-	"Clear Cached Results",
-	"Deletes saved preview and generation cache entries so future runs are rebuilt from scratch."
-)
-registerSettingsSearchEntry(clearCacheTitle, "clear cached results cache delete reset", "settings")
-registerSettingsSearchEntry(clearCacheHelp, "clear cached results cache delete reset", "settings")
-
-ui.clearCacheButton = createButton("Clear Cached Models", Color3.fromRGB(156, 111, 62), "warning")
-ui.clearCacheButton.Size = UDim2.new(1, 0, 0, 34)
-ui.clearCacheButton.Parent = ui.activeSettingsGroup
-registerSettingsSearchEntry(ui.clearCacheButton, "clear cached models cache delete cached previews", "settings", true)
-registerSettingsShortcut("Clear Cached Results", ui.clearCacheButton, "clear cache cached models delete cached previews reset", "settings")
+ui.settingsProceduralFrame = Instance.new("Frame")
+ui.settingsProceduralFrame.Size = UDim2.new(1, 0, 0, 0)
+ui.settingsProceduralFrame.BackgroundColor3 = Color3.fromRGB(20, 24, 32)
+ui.settingsProceduralFrame.BorderSizePixel = 0
+ui.settingsProceduralFrame.AutomaticSize = Enum.AutomaticSize.Y
+ui.settingsProceduralFrame.LayoutOrder = 2
+ui.settingsProceduralFrame.Visible = false
+ui.settingsProceduralFrame.Parent = ui.settingsPanel
+styleCard(ui.settingsProceduralFrame, Color3.fromRGB(61, 74, 101), Color3.fromRGB(37, 45, 61), Color3.fromRGB(118, 141, 186), false)
 
 do
-	local cacheHelp = createLabel(
-		"Reuses identical preview/generate requests so repeated runs can skip Roblox generation. First-time requests are unchanged.",
-		12,
-		Enum.Font.Gotham,
-		Color3.fromRGB(157, 168, 183),
-		40
+	local settingsProceduralPadding = Instance.new("UIPadding")
+	settingsProceduralPadding.PaddingTop = UDim.new(0, 10)
+	settingsProceduralPadding.PaddingBottom = UDim.new(0, 10)
+	settingsProceduralPadding.PaddingLeft = UDim.new(0, 10)
+	settingsProceduralPadding.PaddingRight = UDim.new(0, 10)
+	settingsProceduralPadding.Parent = ui.settingsProceduralFrame
+
+	local settingsProceduralLayout = Instance.new("UIListLayout")
+	settingsProceduralLayout.Padding = UDim.new(0, 8)
+	settingsProceduralLayout.FillDirection = Enum.FillDirection.Vertical
+	settingsProceduralLayout.Parent = ui.settingsProceduralFrame
+end
+
+do
+	local settingsGroup, settingsSectionTitle, settingsSectionHelp = createSettingsGroup(
+		"Settings",
+		"Core plugin behavior, cache, preview defaults, and prompt history tools."
 	)
-	enableAutoHeightLabel(cacheHelp, 24)
-	cacheHelp.Parent = ui.activeSettingsGroup
-	registerSettingsSearchEntry(cacheHelp, "cache help reuses identical preview generate requests", "settings")
+	settingsGroup.LayoutOrder = 3
+	registerSettingsSection("settings", settingsSectionTitle, "settings cache behavior preview history core options", settingsSectionHelp)
+	ui.settingsSearchSections.settings.container = settingsGroup
+	ui.activeSettingsGroup = settingsGroup
 
-	local behaviorTitle = createSectionTitle("Behavior")
-	behaviorTitle.Size = UDim2.new(1, 0, 0, 18)
-	behaviorTitle.Parent = ui.activeSettingsGroup
-	registerSettingsSearchEntry(behaviorTitle, "behavior preview advanced collision confirmation", "settings")
+	do
+		local cacheGroup, cacheGroupTitle, cacheGroupHelp = createSettingsSubgroup(
+			settingsGroup,
+			"Cache & Rebuild",
+			"Reuse saved results for speed, or clear them when you need a clean rebuild.",
+			Color3.fromRGB(79, 96, 131),
+			Color3.fromRGB(38, 47, 64),
+			Color3.fromRGB(120, 146, 193)
+		)
+		registerSettingsSearchEntry(cacheGroupTitle, "cache rebuild cached models preview generate reuse clear", "settings")
+		registerSettingsSearchEntry(cacheGroupHelp, "cache rebuild cached models preview generate reuse clear", "settings")
+		ui.activeSettingsGroup = cacheGroup
+
+		local cacheToggleCard, cacheToggleTitle, cacheToggleContent = createSettingsOptionRow(
+			"Reuse Cached Results",
+			Color3.fromRGB(93, 119, 164)
+		)
+		registerSettingsSearchEntry(cacheToggleTitle, "reuse cached results cache enable disable generation preview", "settings")
+
+		ui.cacheToggleButton = createButton("Cache: Off", Color3.fromRGB(86, 99, 125), "muted")
+		ui.cacheToggleButton.Size = UDim2.new(1, 0, 1, 0)
+		ui.cacheToggleButton.Parent = cacheToggleContent
+		registerSettingsSearchEntry(ui.cacheToggleButton, "cache enable disable cached models generation cache", "settings", true)
+		registerSettingsShortcut("Reuse Cached Results", ui.cacheToggleButton, "cache reuse cached results enable disable generation preview", "settings")
+
+		local clearCacheCard, clearCacheTitle, clearCacheContent = createSettingsOptionRow(
+			"Clear Cached Results",
+			Color3.fromRGB(166, 117, 66)
+		)
+		registerSettingsSearchEntry(clearCacheTitle, "clear cached results cache delete reset", "settings")
+
+		ui.clearCacheButton = createButton("Clear Cached Models", Color3.fromRGB(156, 111, 62), "warning")
+		ui.clearCacheButton.Size = UDim2.new(1, 0, 1, 0)
+		ui.clearCacheButton.Parent = clearCacheContent
+		registerSettingsSearchEntry(ui.clearCacheButton, "clear cached models cache delete cached previews", "settings", true)
+		registerSettingsShortcut("Clear Cached Results", ui.clearCacheButton, "clear cache cached models delete cached previews reset", "settings")
+	end
+
+	do
+		local behaviorGroup, behaviorGroupTitle, behaviorGroupHelp = createSettingsSubgroup(
+			settingsGroup,
+			"Behavior & Workflow",
+			"Control preview opening and whether advanced tuning tools are exposed during day-to-day use.",
+			Color3.fromRGB(76, 91, 118),
+			Color3.fromRGB(34, 42, 57),
+			Color3.fromRGB(109, 131, 173)
+		)
+		registerSettingsSearchEntry(behaviorGroupTitle, "behavior workflow preview advanced collision tuning controls", "settings")
+		registerSettingsSearchEntry(behaviorGroupHelp, "behavior workflow preview advanced collision tuning controls", "settings")
+		ui.activeSettingsGroup = behaviorGroup
+
+		local autoPreviewCard, autoPreviewTitle, autoPreviewContent = createSettingsOptionRow(
+			"Open Preview After Generate",
+			Color3.fromRGB(95, 117, 163)
+		)
+		registerSettingsSearchEntry(autoPreviewTitle, "auto open preview after generate preview panel", "settings")
+
+		ui.autoOpenPreviewButton = createButton("Auto-open Preview: Off", Color3.fromRGB(86, 99, 125), "muted")
+		ui.autoOpenPreviewButton.Size = UDim2.new(1, 0, 1, 0)
+		ui.autoOpenPreviewButton.Parent = autoPreviewContent
+		registerSettingsSearchEntry(ui.autoOpenPreviewButton, "auto open preview preview window behavior", "settings", true)
+		registerSettingsShortcut("Open Preview After Generate", ui.autoOpenPreviewButton, "auto open preview after generate preview panel", "settings")
+
+		local advancedCollisionCard, advancedCollisionTitle, advancedCollisionContent = createSettingsOptionRow(
+			"Show Advanced Collision Tuning",
+			Color3.fromRGB(95, 117, 163)
+		)
+		registerSettingsSearchEntry(advancedCollisionTitle, "show advanced collision tuning heuristics collider inputs", "settings")
+
+		ui.showAdvancedCollisionButton = createButton("Advanced Collision Tuning: Off", Color3.fromRGB(86, 99, 125), "muted")
+		ui.showAdvancedCollisionButton.Size = UDim2.new(1, 0, 1, 0)
+		ui.showAdvancedCollisionButton.Parent = advancedCollisionContent
+		registerSettingsSearchEntry(ui.showAdvancedCollisionButton, "advanced collision tuning heuristics collider settings", "settings", true)
+		registerSettingsShortcut("Show Advanced Collision Tuning", ui.showAdvancedCollisionButton, "advanced collision tuning heuristics collider settings", "settings")
+	end
+
+	do
+		local audioGroup, audioGroupTitle, audioGroupHelp = createSettingsSubgroup(
+			settingsGroup,
+			"Audio",
+			"Toggle interface sounds on or off and tune the loudness for UI feedback and theme-change cues separately.",
+			Color3.fromRGB(71, 101, 124),
+			Color3.fromRGB(34, 47, 58),
+			Color3.fromRGB(103, 150, 182)
+		)
+		registerSettingsSearchEntry(audioGroupTitle, "audio sound sfx ui theme volume slider toggle", "settings")
+		registerSettingsSearchEntry(audioGroupHelp, "audio sound sfx ui theme volume slider toggle", "settings")
+		ui.activeSettingsGroup = audioGroup
+
+		local uiAudioToggleCard, uiAudioToggleTitle, uiAudioToggleContent = createSettingsOptionRow(
+			"UI Audio",
+			Color3.fromRGB(84, 107, 146)
+		)
+		registerSettingsSearchEntry(uiAudioToggleTitle, "ui audio on off sound effects click toggle", "settings")
+
+		ui.uiAudioToggleButton = createButton("UI Audio: On", Color3.fromRGB(84, 107, 146), "info")
+		ui.uiAudioToggleButton.Size = UDim2.new(1, 0, 1, 0)
+		ui.uiAudioToggleButton.Parent = uiAudioToggleContent
+		registerSettingsSearchEntry(ui.uiAudioToggleButton, "ui audio on off sound effects click toggle", "settings", true)
+
+		ui.uiAudioSlider = createVolumeSlider(Color3.fromRGB(84, 107, 146), function(value)
+			uiAudioVolumeLevel = value
+			setSetting(SETTINGS.uiAudioVolume, uiAudioVolumeLevel)
+			updateSettingsButton()
+		end, "UI Audio Level", "Sets how loud button clicks and smaller interface sound effects feel.")
+		ui.uiAudioSlider.frame.Parent = ui.activeSettingsGroup
+		if ui.uiAudioSlider.titleLabel then
+			registerSettingsSearchEntry(ui.uiAudioSlider.titleLabel, "ui audio volume sound effects click volume mute low medium high", "settings")
+		end
+		if ui.uiAudioSlider.descriptionLabel then
+			registerSettingsSearchEntry(ui.uiAudioSlider.descriptionLabel, "ui audio volume sound effects click volume mute low medium high", "settings")
+		end
+		registerSettingsSearchEntry(ui.uiAudioSlider.frame, "ui audio volume slider sound effects click loudness", "settings")
+		registerSettingsShortcut("UI Audio Volume", ui.uiAudioSlider.frame, "ui audio volume slider sound effects click loudness", "settings")
+
+		local themeAudioToggleCard, themeAudioToggleTitle, themeAudioToggleContent = createSettingsOptionRow(
+			"Theme Change Audio",
+			Color3.fromRGB(57, 128, 116)
+		)
+		registerSettingsSearchEntry(themeAudioToggleTitle, "theme change audio on off sound switch toggle", "settings")
+
+		ui.themeChangeAudioToggleButton = createButton("Theme Change Audio: On", Color3.fromRGB(57, 128, 116), "teal")
+		ui.themeChangeAudioToggleButton.Size = UDim2.new(1, 0, 1, 0)
+		ui.themeChangeAudioToggleButton.Parent = themeAudioToggleContent
+		registerSettingsSearchEntry(ui.themeChangeAudioToggleButton, "theme change audio on off sound switch toggle", "settings", true)
+
+		ui.themeChangeAudioSlider = createVolumeSlider(Color3.fromRGB(57, 128, 116), function(value)
+			themeChangeAudioVolumeLevel = value
+			setSetting(SETTINGS.themeChangeAudioVolume, themeChangeAudioVolumeLevel)
+			updateSettingsButton()
+		end, "Theme Audio Level", "Sets how loud theme swaps and styling-change sounds feel.")
+		ui.themeChangeAudioSlider.frame.Parent = ui.activeSettingsGroup
+		if ui.themeChangeAudioSlider.titleLabel then
+			registerSettingsSearchEntry(ui.themeChangeAudioSlider.titleLabel, "theme change volume sound audio theme switch mute low medium high", "settings")
+		end
+		if ui.themeChangeAudioSlider.descriptionLabel then
+			registerSettingsSearchEntry(ui.themeChangeAudioSlider.descriptionLabel, "theme change volume sound audio theme switch mute low medium high", "settings")
+		end
+		registerSettingsSearchEntry(ui.themeChangeAudioSlider.frame, "theme change volume slider sound audio switch loudness", "settings")
+		registerSettingsShortcut("Theme Change Volume", ui.themeChangeAudioSlider.frame, "theme change volume slider sound audio switch loudness", "settings")
+
+		local completionAudioCard, completionAudioTitle, completionAudioContent = createSettingsOptionRow(
+			"Completion Audio",
+			Color3.fromRGB(96, 140, 90)
+		)
+		registerSettingsSearchEntry(completionAudioTitle, "variation completion audio done complete finished dramatic sound toggle", "settings")
+
+		ui.variationCompletionAudioToggleButton = createButton("Variation Completion Audio: On", Color3.fromRGB(96, 140, 90), "active")
+		ui.variationCompletionAudioToggleButton.Size = UDim2.new(1, 0, 1, 0)
+		ui.variationCompletionAudioToggleButton.Parent = completionAudioContent
+		registerSettingsSearchEntry(ui.variationCompletionAudioToggleButton, "variation completion audio done complete finished dramatic sound toggle", "settings", true)
+		registerSettingsShortcut("Variation Completion Audio", ui.variationCompletionAudioToggleButton, "variation completion audio done complete finished dramatic sound toggle", "settings")
+	end
+
+	do
+		local safetyGroup, safetyGroupTitle, safetyGroupHelp = createSettingsSubgroup(
+			settingsGroup,
+			"Safety",
+			"Add confirmation around bulk runtime-storage actions so destructive batch operations are less accidental.",
+			Color3.fromRGB(112, 90, 64),
+			Color3.fromRGB(50, 39, 27),
+			Color3.fromRGB(171, 137, 93)
+		)
+		registerSettingsSearchEntry(safetyGroupTitle, "safety confirmation store all runtime bulk actions", "settings")
+		registerSettingsSearchEntry(safetyGroupHelp, "safety confirmation store all runtime bulk actions", "settings")
+		ui.activeSettingsGroup = safetyGroup
+
+		local confirmStoreAllCard, confirmStoreAllTitle, confirmStoreAllContent = createSettingsOptionRow(
+			"Require Confirmation for Store All",
+			Color3.fromRGB(171, 137, 93)
+		)
+		registerSettingsSearchEntry(confirmStoreAllTitle, "require confirmation store all models safety", "settings")
+
+		ui.confirmStoreAllButton = createButton("Confirm Store All: Off", Color3.fromRGB(86, 99, 125), "muted")
+		ui.confirmStoreAllButton.Size = UDim2.new(1, 0, 1, 0)
+		ui.confirmStoreAllButton.Parent = confirmStoreAllContent
+		registerSettingsSearchEntry(ui.confirmStoreAllButton, "confirm store all models safety behavior", "settings", true)
+		registerSettingsShortcut("Require Confirmation for Store All", ui.confirmStoreAllButton, "confirm store all models safety behavior", "settings")
+	end
+
+	do
+		local historyGroup, historyGroupTitle, historyGroupHelp = createSettingsSubgroup(
+			settingsGroup,
+			"Prompt History",
+			"Review recent prompts inside settings so you can recover ideas or rerun older request directions quickly.",
+			Color3.fromRGB(78, 94, 114),
+			Color3.fromRGB(34, 42, 54),
+			Color3.fromRGB(112, 134, 166)
+		)
+		registerSettingsSearchEntry(historyGroupTitle, "recent prompts history prompt recall log", "settings")
+		registerSettingsSearchEntry(historyGroupHelp, "recent prompts history prompt recall log", "settings")
+		ui.activeSettingsGroup = historyGroup
+
+		local historyLogCard, historyLogTitle, historyLogHelp, historyLogContent = createInlineSettingsControl(
+			"Prompt History Log",
+			"Shows your most recent prompts in a console-style log for quick reference.",
+			Color3.fromRGB(111, 134, 166)
+		)
+		historyLogCard.Parent = ui.activeSettingsGroup
+		registerSettingsSearchEntry(historyLogTitle, "prompt history log recent prompts console", "settings")
+		registerSettingsSearchEntry(historyLogHelp, "prompt history log recent prompts console", "settings")
+
+		ui.historyLogBox = createTextBox(
+			120,
+			"Recent prompts will appear here",
+			"",
+			Enum.Font.Code
+		)
+		ui.historyLogBox.MultiLine = true
+		ui.historyLogBox.TextWrapped = true
+		ui.historyLogBox.TextEditable = false
+		ui.historyLogBox.ClearTextOnFocus = false
+		ui.historyLogBox.Parent = historyLogContent
+		registerSettingsSearchEntry(ui.historyLogBox, "prompt history log recent prompts console", "settings", true)
+		registerSettingsShortcut("Prompt History Log", ui.historyLogBox, "prompt history log recent prompts console", "settings")
+	end
+
+	do
+		local updatesGroup, updatesGroupTitle, updatesGroupHelp = createSettingsSubgroup(
+			settingsGroup,
+			"Updates & Version",
+			"Shows the installed plugin build, checks the GitHub repository for the latest published release, and explains the manual update path.",
+			Color3.fromRGB(82, 104, 138),
+			Color3.fromRGB(36, 47, 64),
+			Color3.fromRGB(132, 167, 214)
+		)
+		registerSettingsSearchEntry(updatesGroupTitle, "updates version github release updater repository current version latest release", "settings")
+		registerSettingsSearchEntry(updatesGroupHelp, "updates version github release updater repository current version latest release", "settings")
+		ui.activeSettingsGroup = updatesGroup
+
+		local currentVersionCard, currentVersionTitle, currentVersionHelp, currentVersionContent = createInlineSettingsControl(
+			"Installed Version",
+			"The local plugin build string currently embedded in this file.",
+			Color3.fromRGB(112, 146, 198)
+		)
+		currentVersionCard.Parent = ui.activeSettingsGroup
+		registerSettingsSearchEntry(currentVersionTitle, "installed version current plugin version local build", "settings")
+		registerSettingsSearchEntry(currentVersionHelp, "installed version current plugin version local build", "settings")
+
+		ui.currentVersionLabel = createLabel("", 12, Enum.Font.GothamBold, Color3.fromRGB(230, 238, 247), 22)
+		enableAutoHeightLabel(ui.currentVersionLabel, 22)
+		ui.currentVersionLabel.Parent = currentVersionContent
+		registerSettingsSearchEntry(ui.currentVersionLabel, "installed version current plugin version local build", "settings", true)
+
+		local latestReleaseCard, latestReleaseTitle, latestReleaseHelp, latestReleaseContent = createInlineSettingsControl(
+			"Latest GitHub Release",
+			"Queries the configured repository release feed. This checker does not overwrite the local plugin file automatically.",
+			Color3.fromRGB(96, 129, 178)
+		)
+		latestReleaseCard.Parent = ui.activeSettingsGroup
+		registerSettingsSearchEntry(latestReleaseTitle, "latest github release update checker release feed repository", "settings")
+		registerSettingsSearchEntry(latestReleaseHelp, "latest github release update checker release feed repository", "settings")
+
+		ui.latestVersionLabel = createLabel("", 12, Enum.Font.GothamBold, Color3.fromRGB(234, 240, 248), 34)
+		enableAutoHeightLabel(ui.latestVersionLabel, 34)
+		ui.latestVersionLabel.Parent = latestReleaseContent
+		registerSettingsSearchEntry(ui.latestVersionLabel, "latest github release update checker release feed repository", "settings", true)
+
+		ui.updateStatusLabel = createLabel("", 11, Enum.Font.Code, Color3.fromRGB(184, 199, 219), 36)
+		enableAutoHeightLabel(ui.updateStatusLabel, 36)
+		ui.updateStatusLabel.Parent = latestReleaseContent
+		registerSettingsSearchEntry(ui.updateStatusLabel, "update status github check result manual install", "settings", true)
+
+		ui.checkUpdatesButton = createButton("Check GitHub Release", Color3.fromRGB(84, 107, 146), "info")
+		ui.checkUpdatesButton.Size = UDim2.new(1, 0, 0, 34)
+		ui.checkUpdatesButton.Parent = ui.activeSettingsGroup
+		registerSettingsSearchEntry(ui.checkUpdatesButton, "check github release updates latest version updater", "settings", true)
+		registerSettingsShortcut("Check GitHub Release", ui.checkUpdatesButton, "check github release updates latest version updater", "settings")
+
+		ui.updateReleaseButton = createButton("Release Install Is Manual", Color3.fromRGB(123, 101, 72), "secondary")
+		ui.updateReleaseButton.Size = UDim2.new(1, 0, 0, 34)
+		ui.updateReleaseButton.Parent = ui.activeSettingsGroup
+		registerSettingsSearchEntry(ui.updateReleaseButton, "manual install update release latest github", "settings", true)
+
+		local releaseUrlCard, releaseUrlTitle, releaseUrlHelp, releaseUrlContent = createInlineSettingsControl(
+			"Release URL",
+			"Copy this link manually to open the GitHub release page outside Studio when an update is available.",
+			Color3.fromRGB(112, 129, 160)
+		)
+		releaseUrlCard.Parent = ui.activeSettingsGroup
+		registerSettingsSearchEntry(releaseUrlTitle, "release url github repository manual install link", "settings")
+		registerSettingsSearchEntry(releaseUrlHelp, "release url github repository manual install link", "settings")
+
+		ui.updateReleaseUrlBox = createTextBox(
+			58,
+			"GitHub release URL",
+			PLUGIN_GITHUB_RELEASES_URL,
+			Enum.Font.Code
+		)
+		ui.updateReleaseUrlBox.TextWrapped = true
+		ui.updateReleaseUrlBox.TextEditable = false
+		ui.updateReleaseUrlBox.ClearTextOnFocus = false
+		ui.updateReleaseUrlBox.Parent = releaseUrlContent
+		registerSettingsSearchEntry(ui.updateReleaseUrlBox, "release url github repository manual install link", "settings", true)
+	end
+
+	ui.activeSettingsGroup = settingsGroup
 end
-
-local autoPreviewTitle, autoPreviewHelp = createSettingsItem(
-	"Open Preview After Generate",
-	"Automatically opens the preview panel after a full model generation finishes."
-)
-registerSettingsSearchEntry(autoPreviewTitle, "auto open preview after generate preview panel", "settings")
-registerSettingsSearchEntry(autoPreviewHelp, "auto open preview after generate preview panel", "settings")
-
-ui.autoOpenPreviewButton = createButton("Auto-open Preview: Off", Color3.fromRGB(86, 99, 125), "muted")
-ui.autoOpenPreviewButton.Size = UDim2.new(1, 0, 0, 34)
-ui.autoOpenPreviewButton.Parent = ui.activeSettingsGroup
-registerSettingsSearchEntry(ui.autoOpenPreviewButton, "auto open preview preview window behavior", "settings", true)
-registerSettingsShortcut("Open Preview After Generate", ui.autoOpenPreviewButton, "auto open preview after generate preview panel", "settings")
-
-local advancedCollisionTitle, advancedCollisionHelp = createSettingsItem(
-	"Show Advanced Collision Tuning",
-	"Shows the extra collision heuristic inputs in the main panel for fine-tuning collider behavior."
-)
-registerSettingsSearchEntry(advancedCollisionTitle, "show advanced collision tuning heuristics collider inputs", "settings")
-registerSettingsSearchEntry(advancedCollisionHelp, "show advanced collision tuning heuristics collider inputs", "settings")
-
-ui.showAdvancedCollisionButton = createButton("Advanced Collision Tuning: Off", Color3.fromRGB(86, 99, 125), "muted")
-ui.showAdvancedCollisionButton.Size = UDim2.new(1, 0, 0, 34)
-ui.showAdvancedCollisionButton.Parent = ui.activeSettingsGroup
-registerSettingsSearchEntry(ui.showAdvancedCollisionButton, "advanced collision tuning heuristics collider settings", "settings", true)
-registerSettingsShortcut("Show Advanced Collision Tuning", ui.showAdvancedCollisionButton, "advanced collision tuning heuristics collider settings", "settings")
-
-local confirmStoreAllTitle, confirmStoreAllHelp = createSettingsItem(
-	"Require Confirmation for Store All",
-	"Adds a safety confirmation before storing every generated model back into runtime storage."
-)
-registerSettingsSearchEntry(confirmStoreAllTitle, "require confirmation store all models safety", "settings")
-registerSettingsSearchEntry(confirmStoreAllHelp, "require confirmation store all models safety", "settings")
-
-ui.confirmStoreAllButton = createButton("Confirm Store All: Off", Color3.fromRGB(86, 99, 125), "muted")
-ui.confirmStoreAllButton.Size = UDim2.new(1, 0, 0, 34)
-ui.confirmStoreAllButton.Parent = ui.activeSettingsGroup
-registerSettingsSearchEntry(ui.confirmStoreAllButton, "confirm store all models safety behavior", "settings", true)
-registerSettingsShortcut("Require Confirmation for Store All", ui.confirmStoreAllButton, "confirm store all models safety behavior", "settings")
 
 do
-	local historyTitle = createSectionTitle("Recent Prompts")
-	historyTitle.Size = UDim2.new(1, 0, 0, 18)
-	historyTitle.Parent = ui.activeSettingsGroup
-	registerSettingsSearchEntry(historyTitle, "recent prompts history prompt recall", "settings")
+	local promptToolsGroup, promptToolsTitle, promptToolsHelp = createSettingsGroup(
+		"Prompt Library",
+		"Save reusable prompts, reload favorite briefs quickly, and control naming/layout defaults for generated batches."
+	)
+	promptToolsGroup.LayoutOrder = 4
+	registerSettingsSection("prompt_tools", promptToolsTitle, "prompt favorites saved prompts naming layout regenerate batch", promptToolsHelp)
+	ui.settingsSearchSections.prompt_tools.container = promptToolsGroup
+	ui.activeSettingsGroup = promptToolsGroup
+
+	ui.favoritePromptButton = createButton("Favorite Current Prompt", Color3.fromRGB(57, 128, 116), "teal")
+	ui.favoritePromptButton.Size = UDim2.new(1, 0, 0, 34)
+	ui.favoritePromptButton.Parent = ui.activeSettingsGroup
+	registerSettingsSearchEntry(ui.favoritePromptButton, "favorite current prompt save prompt library bookmark", "prompt_tools", true)
+	registerSettingsShortcut("Favorite Current Prompt", ui.favoritePromptButton, "favorite current prompt save prompt library bookmark", "prompt_tools")
+
+ui.unfavoritePromptButton = createButton("Remove Current Favorite", Color3.fromRGB(123, 101, 72), "warning")
+ui.unfavoritePromptButton.Size = UDim2.new(1, 0, 0, 34)
+ui.unfavoritePromptButton.Parent = ui.activeSettingsGroup
+registerSettingsSearchEntry(ui.unfavoritePromptButton, "remove current favorite prompt unfavorite bookmark", "prompt_tools", true)
+registerSettingsShortcut("Remove Current Favorite", ui.unfavoritePromptButton, "remove current favorite prompt unfavorite bookmark", "prompt_tools")
+
+local favoritesTitle = createSectionTitle("Favorite Prompts")
+favoritesTitle.Parent = ui.activeSettingsGroup
+registerSettingsSearchEntry(favoritesTitle, "favorite prompts saved prompt library reuse", "prompt_tools")
+
+ui.favoritePromptButtons = {}
+for index = 1, 3 do
+	local button = createButton(("Favorite %d"):format(index), Color3.fromRGB(90, 110, 140), "secondary")
+	button.Size = UDim2.new(1, 0, 0, 34)
+	button.Parent = ui.activeSettingsGroup
+	ui.favoritePromptButtons[index] = button
+	registerSettingsSearchEntry(button, "favorite prompt saved prompt reuse load", "prompt_tools", true)
 end
 
-local historyLogTitle, historyLogHelp = createSettingsItem(
-	"Prompt History Log",
-	"Shows your most recent prompts in a console-style log for quick reference."
-)
-registerSettingsSearchEntry(historyLogTitle, "prompt history log recent prompts console", "settings")
-registerSettingsSearchEntry(historyLogHelp, "prompt history log recent prompts console", "settings")
+local recentTitle = createSectionTitle("Quick Reload Recent")
+recentTitle.Parent = ui.activeSettingsGroup
+registerSettingsSearchEntry(recentTitle, "recent prompts quick reload rerun history", "prompt_tools")
 
-ui.historyLogBox = createTextBox(
-	120,
-	"Recent prompts will appear here",
-	"",
-	Enum.Font.Code
-)
-ui.historyLogBox.MultiLine = true
-ui.historyLogBox.TextWrapped = true
-ui.historyLogBox.TextEditable = false
-ui.historyLogBox.ClearTextOnFocus = false
-ui.historyLogBox.Parent = ui.activeSettingsGroup
-registerSettingsSearchEntry(ui.historyLogBox, "prompt history log recent prompts console", "settings", true)
-registerSettingsShortcut("Prompt History Log", ui.historyLogBox, "prompt history log recent prompts console", "settings")
+ui.recentPromptButtons = {}
+for index = 1, 3 do
+	local button = createButton(("Recent %d"):format(index), Color3.fromRGB(84, 107, 146), "info")
+	button.Size = UDim2.new(1, 0, 0, 34)
+	button.Parent = ui.activeSettingsGroup
+	ui.recentPromptButtons[index] = button
+	registerSettingsSearchEntry(button, "recent prompt quick reload rerun history", "prompt_tools", true)
+end
 
-local themeStyleGroup, themeStyleTitle, themeStyleHelp = createSettingsGroup(
-	"Theme Styling Lab",
-	"Push the selected UI theme into softer, louder, warmer, cooler, or different typography directions without switching the base preset."
-)
-themeStyleGroup.LayoutOrder = 3
-registerSettingsSection("theme_style", themeStyleTitle, "theme style styling lab ui preset variant tone contrast typography fonts", themeStyleHelp)
-ui.settingsSearchSections.theme_style.container = themeStyleGroup
-ui.activeSettingsGroup = themeStyleGroup
+ui.namePatternButton = createButton("Name Pattern: Prompt", Color3.fromRGB(67, 126, 141), "accent")
+ui.namePatternButton.Size = UDim2.new(1, 0, 0, 34)
+ui.namePatternButton.Parent = ui.activeSettingsGroup
+registerSettingsSearchEntry(ui.namePatternButton, "name pattern output naming prompt seed index", "prompt_tools", true)
+registerSettingsShortcut("Output Name Pattern", ui.namePatternButton, "name pattern output naming prompt seed index", "prompt_tools")
+
+	ui.batchLayoutButton = createButton("Batch Layout: Folder Only", Color3.fromRGB(90, 110, 140), "secondary")
+	ui.batchLayoutButton.Size = UDim2.new(1, 0, 0, 34)
+	ui.batchLayoutButton.Parent = ui.activeSettingsGroup
+	registerSettingsSearchEntry(ui.batchLayoutButton, "batch layout row grid folder placement arrange variations", "prompt_tools", true)
+	registerSettingsShortcut("Batch Layout", ui.batchLayoutButton, "batch layout row grid folder placement arrange variations", "prompt_tools")
+end
+
+do
+	local themeStyleGroup, themeStyleTitle, themeStyleHelp = createSettingsGroup(
+		"Theme Styling Lab",
+		"Push the selected UI theme into softer, louder, warmer, cooler, or different typography directions without switching the base preset."
+	)
+	themeStyleGroup.LayoutOrder = 5
+	registerSettingsSection("theme_style", themeStyleTitle, "theme style styling lab ui preset variant tone contrast typography fonts", themeStyleHelp)
+	ui.settingsSearchSections.theme_style.container = themeStyleGroup
+	ui.activeSettingsGroup = themeStyleGroup
 
 local themeVariantTitle, themeVariantHelp = createSettingsItem(
 	"Theme Variant",
@@ -2890,20 +5186,22 @@ enableAutoHeightLabel(themeUi.stylingSummaryLabel, 34)
 themeUi.stylingSummaryLabel.Parent = ui.activeSettingsGroup
 registerSettingsSearchEntry(themeUi.stylingSummaryLabel, "theme styling summary variant tone contrast typography current", "theme_style", true)
 
-themeUi.resetStylingButton = createButton("Reset Theme Styling", Color3.fromRGB(123, 101, 72), "warning")
-themeUi.resetStylingButton.Size = UDim2.new(1, 0, 0, 34)
-themeUi.resetStylingButton.Parent = ui.activeSettingsGroup
-registerSettingsSearchEntry(themeUi.resetStylingButton, "reset theme styling variant tone contrast typography", "theme_style", true)
-registerSettingsShortcut("Reset Theme Styling", themeUi.resetStylingButton, "reset theme styling variant tone contrast typography", "theme_style")
+	themeUi.resetStylingButton = createButton("Reset Theme Styling", Color3.fromRGB(123, 101, 72), "warning")
+	themeUi.resetStylingButton.Size = UDim2.new(1, 0, 0, 34)
+	themeUi.resetStylingButton.Parent = ui.activeSettingsGroup
+	registerSettingsSearchEntry(themeUi.resetStylingButton, "reset theme styling variant tone contrast typography", "theme_style", true)
+	registerSettingsShortcut("Reset Theme Styling", themeUi.resetStylingButton, "reset theme styling variant tone contrast typography", "theme_style")
+end
 
-local experimentalGroup, experimentalTitle, experimentalHelp = createSettingsGroup(
-	"Experimental Settings",
-	"Active but more volatile controls for stronger prompt steering, faster previews, or alternate placement behavior."
-)
-experimentalGroup.LayoutOrder = 4
-registerSettingsSection("experimental", experimentalTitle, "experimental future ideas upcoming options tests", experimentalHelp)
-ui.settingsSearchSections.experimental.container = experimentalGroup
-ui.activeSettingsGroup = experimentalGroup
+do
+	local experimentalGroup, experimentalTitle, experimentalHelp = createSettingsGroup(
+		"Experimental Settings",
+		"Active but more volatile controls for stronger prompt steering, faster previews, or alternate placement behavior."
+	)
+	experimentalGroup.LayoutOrder = 6
+	registerSettingsSection("experimental", experimentalTitle, "experimental future ideas upcoming options tests", experimentalHelp)
+	ui.settingsSearchSections.experimental.container = experimentalGroup
+	ui.activeSettingsGroup = experimentalGroup
 
 local experimentalNegativePromptTitle = createSectionTitle("Negative Prompt")
 experimentalNegativePromptTitle.Parent = ui.activeSettingsGroup
@@ -2930,6 +5228,19 @@ ui.experimentalNegativePromptBox.TextWrapped = true
 ui.experimentalNegativePromptBox.Parent = ui.activeSettingsGroup
 registerSettingsSearchEntry(ui.experimentalNegativePromptBox, "negative prompt avoid exclude forbidden words phrases", "experimental", true)
 registerSettingsShortcut("Negative Prompt", ui.experimentalNegativePromptBox, "negative prompt avoid exclude forbidden words phrases", "experimental")
+
+local scenePromptToggleTitle, scenePromptToggleHelp = createSettingsItem(
+	"Scene Direction Prompt",
+	"Shows an extra prompt field in the main panel for full scene-composition attempts that infer the needed individual assets from context."
+)
+registerSettingsSearchEntry(scenePromptToggleTitle, "scene direction prompt scene attempt environment prompt extra field", "experimental")
+registerSettingsSearchEntry(scenePromptToggleHelp, "scene direction prompt scene attempt environment prompt extra field", "experimental")
+
+ui.experimentalScenePromptButton = createButton("Scene Direction Prompt: Off", Color3.fromRGB(123, 101, 72), "warning")
+ui.experimentalScenePromptButton.Size = UDim2.new(1, 0, 0, 34)
+ui.experimentalScenePromptButton.Parent = ui.activeSettingsGroup
+registerSettingsSearchEntry(ui.experimentalScenePromptButton, "scene direction prompt scene attempt environment prompt extra field", "experimental", true)
+registerSettingsShortcut("Scene Direction Prompt", ui.experimentalScenePromptButton, "scene direction prompt scene attempt environment prompt extra field", "experimental")
 
 local styleBiasTitle, styleBiasHelp = createSettingsItem(
 	"Style Bias",
@@ -2964,13 +5275,47 @@ local groundSnapTitle, groundSnapHelp = createSettingsItem(
 registerSettingsSearchEntry(groundSnapTitle, "ground snap origin placement center pivot align ground", "experimental")
 registerSettingsSearchEntry(groundSnapHelp, "ground snap origin placement center pivot align ground", "experimental")
 
-ui.experimentalGroundSnapButton = createButton("Ground Snap at Origin: Off", Color3.fromRGB(57, 128, 116), "teal")
-ui.experimentalGroundSnapButton.Size = UDim2.new(1, 0, 0, 34)
-ui.experimentalGroundSnapButton.Parent = ui.activeSettingsGroup
-registerSettingsSearchEntry(ui.experimentalGroundSnapButton, "ground snap origin placement center pivot align ground", "experimental", true)
-registerSettingsShortcut("Ground Snap at Origin", ui.experimentalGroundSnapButton, "ground snap origin placement center pivot align ground", "experimental")
+	ui.experimentalGroundSnapButton = createButton("Ground Snap at Origin: Off", Color3.fromRGB(57, 128, 116), "teal")
+	ui.experimentalGroundSnapButton.Size = UDim2.new(1, 0, 0, 34)
+	ui.experimentalGroundSnapButton.Parent = ui.activeSettingsGroup
+	registerSettingsSearchEntry(ui.experimentalGroundSnapButton, "ground snap origin placement center pivot align ground", "experimental", true)
+	registerSettingsShortcut("Ground Snap at Origin", ui.experimentalGroundSnapButton, "ground snap origin placement center pivot align ground", "experimental")
+end
+
+do
+	local licensingGroup, licensingTitle, licensingHelp = createSettingsGroup(
+		"Licensing & Attribution",
+		"States ownership of the plugin implementation and attributes Roblox platform generation technology appropriately."
+	)
+	licensingGroup.LayoutOrder = 7
+	registerSettingsSection("licensing", licensingTitle, "licensing attribution ownership roblox cube 3d legal rights creator author implementation", licensingHelp)
+	ui.settingsSearchSections.licensing.container = licensingGroup
+	ui.activeSettingsGroup = licensingGroup
+
+	local pluginOwnershipTitle, pluginOwnershipHelp = createSettingsItem(
+		"Plugin Ownership",
+		"This plugin implementation, interface, workflow design, and surrounding tool logic belong to the plugin creator. This notice does not claim ownership over Roblox platform technology."
+	)
+	registerSettingsSearchEntry(pluginOwnershipTitle, "plugin ownership creator author implementation interface workflow tool logic rights", "licensing")
+	registerSettingsSearchEntry(pluginOwnershipHelp, "plugin ownership creator author implementation interface workflow tool logic rights", "licensing")
+
+	local robloxAttributionTitle, robloxAttributionHelp = createSettingsItem(
+		"Roblox Cube 3D Attribution",
+		"Model generation in this plugin relies on Roblox generation technology, including Cube 3D capabilities and related Roblox services. Those underlying generation technologies remain Roblox technology and are governed by Roblox platform terms."
+	)
+	registerSettingsSearchEntry(robloxAttributionTitle, "roblox cube 3d attribution technology generation service roblox platform", "licensing")
+	registerSettingsSearchEntry(robloxAttributionHelp, "roblox cube 3d attribution technology generation service roblox platform", "licensing")
+
+	local rightsTitle, rightsHelp = createSettingsItem(
+		"Rights + Responsibility",
+		"Prompt content, generated assets, trademarks, branding references, and platform usage remain subject to Roblox terms, community standards, and any applicable third-party rights in the source material or resulting content."
+	)
+	registerSettingsSearchEntry(rightsTitle, "rights responsibility generated assets prompts trademarks branding third-party content", "licensing")
+	registerSettingsSearchEntry(rightsHelp, "rights responsibility generated assets prompts trademarks branding third-party content", "licensing")
+end
 
 ui.activeSettingsGroup = nil
+rebuildProceduralSettingsOverview()
 
 themeUi.optionsPadding = Instance.new("UIPadding")
 themeUi.optionsPadding.PaddingTop = UDim.new(0, 8)
@@ -3124,35 +5469,40 @@ schemaHelp.LayoutOrder = 13
 enableAutoHeightLabel(schemaHelp, 24)
 schemaHelp.Parent = root
 
-local seedTitle = createSectionTitle("Variation Seed")
-seedTitle.LayoutOrder = 14
-seedTitle.Parent = root
+ui.seedTitle = createSectionTitle("Variation Seed")
+ui.seedTitle.LayoutOrder = 19
+ui.seedTitle.Parent = root
 
 ui.seedFrame = Instance.new("Frame")
-ui.seedFrame.Size = UDim2.new(1, 0, 0, 34)
+ui.seedFrame.Size = UDim2.new(1, 0, 0, 40)
 ui.seedFrame.BackgroundTransparency = 1
-ui.seedFrame.LayoutOrder = 15
+ui.seedFrame.LayoutOrder = 20
 ui.seedFrame.Parent = root
 
 ui.seedBox = createSmallBox("Leave blank for random, or enter text/number to repeat a variation", tostring(getSetting(SETTINGS.seed, "")))
-ui.seedBox.Size = UDim2.new(0.68, -4, 1, 0)
+ui.seedBox.Size = UDim2.new(0.5, -8, 1, 0)
 ui.seedBox.Parent = ui.seedFrame
 
+ui.variationCountBox = createSmallBox("Variations", tostring(getSetting(SETTINGS.variationCount, 1)))
+ui.variationCountBox.Size = UDim2.new(0.18, -8, 1, 0)
+ui.variationCountBox.Position = UDim2.new(0.5, 8, 0, 0)
+ui.variationCountBox.Parent = ui.seedFrame
+
 ui.randomSeedButton = createButton("Random Seed", Color3.fromRGB(90, 110, 140), "secondary")
-ui.randomSeedButton.Size = UDim2.new(0.32, -4, 1, 0)
-ui.randomSeedButton.Position = UDim2.new(0.68, 8, 0, 0)
+ui.randomSeedButton.Size = UDim2.new(0.32, -16, 1, 0)
+ui.randomSeedButton.Position = UDim2.new(0.68, 16, 0, 0)
 ui.randomSeedButton.Parent = ui.seedFrame
 
-local seedHelp = createLabel(
-	"Use the same seed to get a similar variation again. Change or clear it when you want a new result from the same prompt.",
+ui.seedHelp = createLabel(
+	"Use the same seed to reproduce a direction. Raise Variations to batch-generate several candidates from one prompt; numbered seeds are stepped automatically.",
 	12,
 	Enum.Font.Gotham,
 	Color3.fromRGB(157, 168, 183),
 	34
 )
-seedHelp.LayoutOrder = 16
-enableAutoHeightLabel(seedHelp, 24)
-seedHelp.Parent = root
+ui.seedHelp.LayoutOrder = 21
+enableAutoHeightLabel(ui.seedHelp, 24)
+ui.seedHelp.Parent = root
 
 ui.tipsLabel = createLabel(
 	"Medium is the faster balanced preset, High is the default full-detail mode, and Ultra keeps the 20,000 triangle cap but pushes size and collision detail harder. If one object is selected, the result is inserted there; otherwise it goes to Workspace.",
@@ -3161,14 +5511,14 @@ ui.tipsLabel = createLabel(
 	Color3.fromRGB(157, 168, 183),
 	34
 )
-ui.tipsLabel.LayoutOrder = 17
+ui.tipsLabel.LayoutOrder = 22
 enableAutoHeightLabel(ui.tipsLabel, 24)
 ui.tipsLabel.Parent = root
 
 ui.buttonFrame = Instance.new("Frame")
-ui.buttonFrame.Size = UDim2.new(1, 0, 0, 88)
+ui.buttonFrame.Size = UDim2.new(1, 0, 0, 130)
 ui.buttonFrame.BackgroundTransparency = 1
-ui.buttonFrame.LayoutOrder = 18
+ui.buttonFrame.LayoutOrder = 23
 ui.buttonFrame.Parent = root
 
 ui.buttonLayout = Instance.new("UIGridLayout")
@@ -3191,10 +5541,13 @@ ui.runtimeAllButton.Parent = ui.buttonFrame
 ui.toggleStorageButton = createButton("Show Stored Models", Color3.fromRGB(67, 126, 141), "accent")
 ui.toggleStorageButton.Parent = ui.buttonFrame
 
+ui.regenerateSelectedButton = createButton("Regenerate Selected", Color3.fromRGB(57, 128, 116), "teal")
+ui.regenerateSelectedButton.Parent = ui.buttonFrame
+
 ui.guideFocusGroups.step_prompt = {ui.presetFrame, ui.promptBox}
 ui.guideFocusGroups.step_inputs = {ui.settingsFrame, ui.colliderModeBox, ui.schemaBox, ui.seedFrame}
 ui.guideFocusGroups.step_preview = {ui.previewButton}
-ui.guideFocusGroups.step_generate = {ui.generateButton}
+ui.guideFocusGroups.step_generate = {ui.generateButton, ui.regenerateSelectedButton}
 ui.guideFocusGroups.step_store = {ui.runtimeButton, ui.runtimeAllButton, ui.toggleStorageButton}
 
 local previewRoot = Instance.new("ScrollingFrame")
@@ -3205,6 +5558,7 @@ previewRoot.AutomaticCanvasSize = Enum.AutomaticSize.Y
 previewRoot.CanvasSize = UDim2.new()
 previewRoot.ScrollBarThickness = 6
 previewRoot.Parent = previewWidget
+ui.previewRoot = previewRoot
 addVerticalGradient(previewRoot, Color3.fromRGB(43, 53, 73), Color3.fromRGB(24, 31, 44))
 table.insert(themeRegistry.roots, {instance = previewRoot})
 
@@ -3243,12 +5597,57 @@ ui.closePreviewButton.Size = UDim2.new(1, 0, 0, 34)
 ui.closePreviewButton.Position = UDim2.new(0, 0, 0, 58)
 ui.closePreviewButton.Parent = previewHeader
 
+ui.previewCompareFrame = Instance.new("Frame")
+ui.previewCompareFrame.Size = UDim2.new(1, 0, 0, 308)
+ui.previewCompareFrame.BackgroundColor3 = Color3.fromRGB(20, 24, 32)
+ui.previewCompareFrame.BorderSizePixel = 0
+ui.previewCompareFrame.LayoutOrder = 3
+ui.previewCompareFrame.Visible = false
+ui.previewCompareFrame.Parent = previewRoot
+styleCard(ui.previewCompareFrame, Color3.fromRGB(63, 87, 112), Color3.fromRGB(36, 49, 65), Color3.fromRGB(112, 153, 196), false)
+
+local previewComparePadding = Instance.new("UIPadding")
+previewComparePadding.PaddingTop = UDim.new(0, 10)
+previewComparePadding.PaddingBottom = UDim.new(0, 10)
+previewComparePadding.PaddingLeft = UDim.new(0, 10)
+previewComparePadding.PaddingRight = UDim.new(0, 10)
+previewComparePadding.Parent = ui.previewCompareFrame
+
+ui.previewCompareTitleLabel = createSectionTitle("Preview Gallery")
+ui.previewCompareTitleLabel.Parent = ui.previewCompareFrame
+
+ui.previewCompareHintLabel = createLabel(
+	"All generated preview variants appear here. Left-click a card to focus it in the main preview. Right-click a card to select it for batch actions.",
+	11,
+	Enum.Font.Gotham,
+	Color3.fromRGB(186, 206, 227),
+	28
+)
+enableAutoHeightLabel(ui.previewCompareHintLabel, 24)
+ui.previewCompareHintLabel.Position = UDim2.new(0, 0, 0, 24)
+ui.previewCompareHintLabel.Parent = ui.previewCompareFrame
+
+ui.previewCompareGrid = Instance.new("ScrollingFrame")
+ui.previewCompareGrid.Size = UDim2.new(1, 0, 0, 244)
+ui.previewCompareGrid.BackgroundTransparency = 1
+ui.previewCompareGrid.BorderSizePixel = 0
+ui.previewCompareGrid.CanvasSize = UDim2.new()
+ui.previewCompareGrid.AutomaticCanvasSize = Enum.AutomaticSize.Y
+ui.previewCompareGrid.ScrollBarThickness = 6
+ui.previewCompareGrid.Position = UDim2.new(0, 0, 0, 52)
+ui.previewCompareGrid.Parent = ui.previewCompareFrame
+
+ui.previewCompareLayout = Instance.new("UIGridLayout")
+ui.previewCompareLayout.CellPadding = UDim2.new(0, 8, 0, 8)
+ui.previewCompareLayout.CellSize = UDim2.new(0.5, -4, 0, 148)
+ui.previewCompareLayout.Parent = ui.previewCompareGrid
+
 local previewInfoFrame = Instance.new("Frame")
 previewInfoFrame.Size = UDim2.new(1, 0, 0, 0)
 previewInfoFrame.BackgroundColor3 = Color3.fromRGB(21, 27, 38)
 previewInfoFrame.BorderSizePixel = 0
 previewInfoFrame.AutomaticSize = Enum.AutomaticSize.Y
-previewInfoFrame.LayoutOrder = 2
+previewInfoFrame.LayoutOrder = 4
 previewInfoFrame.Parent = previewRoot
 styleCard(previewInfoFrame, Color3.fromRGB(74, 94, 129), Color3.fromRGB(52, 66, 92), Color3.fromRGB(123, 157, 207), false)
 themeRegistry.cards[#themeRegistry.cards].role = "panelStrong"
@@ -3270,17 +5669,98 @@ ui.previewInfoLabel = createLabel(
 enableAutoHeightLabel(ui.previewInfoLabel, 24)
 ui.previewInfoLabel.Parent = previewInfoFrame
 
+ui.previewActivityFrame = Instance.new("Frame")
+ui.previewActivityFrame.Size = UDim2.new(1, 0, 0, 0)
+ui.previewActivityFrame.BackgroundColor3 = Color3.fromRGB(26, 34, 48)
+ui.previewActivityFrame.BorderSizePixel = 0
+ui.previewActivityFrame.AutomaticSize = Enum.AutomaticSize.Y
+ui.previewActivityFrame.LayoutOrder = 2
+ui.previewActivityFrame.Visible = false
+ui.previewActivityFrame.Parent = previewRoot
+styleCard(ui.previewActivityFrame, Color3.fromRGB(88, 121, 179), Color3.fromRGB(45, 60, 86), Color3.fromRGB(143, 198, 255), false)
+table.insert(themeRegistry.cards, {instance = ui.previewActivityFrame, role = "panelStrong"})
+
+local previewActivityPadding = Instance.new("UIPadding")
+previewActivityPadding.PaddingTop = UDim.new(0, 8)
+previewActivityPadding.PaddingBottom = UDim.new(0, 8)
+previewActivityPadding.PaddingLeft = UDim.new(0, 10)
+previewActivityPadding.PaddingRight = UDim.new(0, 10)
+previewActivityPadding.Parent = ui.previewActivityFrame
+
+local previewActivityLayout = Instance.new("UIListLayout")
+previewActivityLayout.Padding = UDim.new(0, 5)
+previewActivityLayout.FillDirection = Enum.FillDirection.Vertical
+previewActivityLayout.Parent = ui.previewActivityFrame
+
+ui.previewActivityTitleLabel = createSectionTitle("Preview Activity")
+ui.previewActivityTitleLabel.Parent = ui.previewActivityFrame
+
+ui.previewActivityStatusLabel = createLabel(
+	"Generating preview...",
+	13,
+	Enum.Font.GothamBold,
+	Color3.fromRGB(224, 233, 247),
+	22
+)
+enableAutoHeightLabel(ui.previewActivityStatusLabel, 22)
+ui.previewActivityStatusLabel.Parent = ui.previewActivityFrame
+
+ui.previewActivityMetaLabel = createLabel(
+	"Elapsed 0s  |  Batch ETA estimating...  |  Cache hits 0",
+	11,
+	Enum.Font.Gotham,
+	Color3.fromRGB(176, 197, 226),
+	20
+)
+enableAutoHeightLabel(ui.previewActivityMetaLabel, 20)
+ui.previewActivityMetaLabel.Parent = ui.previewActivityFrame
+
+ui.previewActivityBarFrame = Instance.new("Frame")
+ui.previewActivityBarFrame.Size = UDim2.new(1, 0, 0, 14)
+ui.previewActivityBarFrame.BackgroundColor3 = Color3.fromRGB(20, 28, 40)
+ui.previewActivityBarFrame.BorderSizePixel = 0
+ui.previewActivityBarFrame.Parent = ui.previewActivityFrame
+createCorner(ui.previewActivityBarFrame, 8)
+createStroke(ui.previewActivityBarFrame, Color3.fromRGB(95, 136, 204))
+
+ui.previewActivityBarFill = Instance.new("Frame")
+ui.previewActivityBarFill.Size = UDim2.new(0, 0, 1, 0)
+ui.previewActivityBarFill.BackgroundColor3 = Color3.fromRGB(109, 187, 255)
+ui.previewActivityBarFill.BorderSizePixel = 0
+ui.previewActivityBarFill.Parent = ui.previewActivityBarFrame
+createCorner(ui.previewActivityBarFill, 8)
+addVerticalGradient(ui.previewActivityBarFill, Color3.fromRGB(170, 227, 255), Color3.fromRGB(92, 150, 255))
+
+ui.previewActivityBarSweep = Instance.new("Frame")
+ui.previewActivityBarSweep.Size = UDim2.new(0, 42, 1, -4)
+ui.previewActivityBarSweep.Position = UDim2.new(0, -42, 0, 2)
+ui.previewActivityBarSweep.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+ui.previewActivityBarSweep.BackgroundTransparency = 0.65
+ui.previewActivityBarSweep.BorderSizePixel = 0
+ui.previewActivityBarSweep.Parent = ui.previewActivityBarFrame
+createCorner(ui.previewActivityBarSweep, 8)
+createActivityBarDecor(ui.previewActivityBarFrame)
+
+ui.previewActivityDetailLabel = createLabel(
+	"Preview progress is estimated from completed variations.",
+	11,
+	Enum.Font.Code,
+	Color3.fromRGB(189, 208, 232),
+	44
+)
+enableAutoHeightLabel(ui.previewActivityDetailLabel, 44)
+ui.previewActivityDetailLabel.Parent = ui.previewActivityFrame
+
 ui.previewViewport = Instance.new("ViewportFrame")
 ui.previewViewport.Size = UDim2.new(1, 0, 0, 320)
 ui.previewViewport.BackgroundColor3 = Color3.fromRGB(28, 35, 49)
 ui.previewViewport.BorderSizePixel = 0
-ui.previewViewport.LayoutOrder = 3
+ui.previewViewport.LayoutOrder = 5
 ui.previewViewport.Parent = previewRoot
 createCorner(ui.previewViewport, 12)
 createStroke(ui.previewViewport, Color3.fromRGB(86, 104, 136))
 addVerticalGradient(ui.previewViewport, Color3.fromRGB(82, 103, 142), Color3.fromRGB(58, 75, 104))
 createShadow(ui.previewViewport, 0.75, 8)
-table.insert(themeRegistry.cards, {instance = ui.previewViewport, role = "viewport", includeShadow = true})
 
 ui.previewWorldModel = Instance.new("WorldModel")
 ui.previewWorldModel.Parent = ui.previewViewport
@@ -3292,12 +5772,39 @@ ui.previewViewport.Ambient = PREVIEW_LIGHTING_PRESETS.Studio.ambient
 ui.previewViewport.LightColor = PREVIEW_LIGHTING_PRESETS.Studio.lightColor
 ui.previewViewport.LightDirection = PREVIEW_LIGHTING_PRESETS.Studio.lightDirection
 
+ui.previewSelectedFrame = Instance.new("ScrollingFrame")
+ui.previewSelectedFrame.Size = UDim2.new(1, 0, 0, 320)
+ui.previewSelectedFrame.BackgroundColor3 = Color3.fromRGB(28, 35, 49)
+ui.previewSelectedFrame.BorderSizePixel = 0
+ui.previewSelectedFrame.LayoutOrder = 5
+ui.previewSelectedFrame.CanvasSize = UDim2.new()
+ui.previewSelectedFrame.AutomaticCanvasSize = Enum.AutomaticSize.Y
+ui.previewSelectedFrame.ScrollBarThickness = 6
+ui.previewSelectedFrame.Visible = false
+ui.previewSelectedFrame.Parent = previewRoot
+createCorner(ui.previewSelectedFrame, 12)
+createStroke(ui.previewSelectedFrame, Color3.fromRGB(86, 104, 136))
+addVerticalGradient(ui.previewSelectedFrame, Color3.fromRGB(82, 103, 142), Color3.fromRGB(58, 75, 104))
+createShadow(ui.previewSelectedFrame, 0.75, 8)
+
+local previewSelectedPadding = Instance.new("UIPadding")
+previewSelectedPadding.PaddingTop = UDim.new(0, 10)
+previewSelectedPadding.PaddingBottom = UDim.new(0, 10)
+previewSelectedPadding.PaddingLeft = UDim.new(0, 10)
+previewSelectedPadding.PaddingRight = UDim.new(0, 10)
+previewSelectedPadding.Parent = ui.previewSelectedFrame
+
+ui.previewSelectedLayout = Instance.new("UIGridLayout")
+ui.previewSelectedLayout.CellPadding = UDim2.new(0, 8, 0, 8)
+ui.previewSelectedLayout.CellSize = UDim2.new(0.5, -4, 0, 132)
+ui.previewSelectedLayout.Parent = ui.previewSelectedFrame
+
 local previewStatsFrame = Instance.new("Frame")
 previewStatsFrame.Size = UDim2.new(1, 0, 0, 0)
 previewStatsFrame.BackgroundColor3 = Color3.fromRGB(20, 24, 32)
 previewStatsFrame.BorderSizePixel = 0
 previewStatsFrame.AutomaticSize = Enum.AutomaticSize.Y
-previewStatsFrame.LayoutOrder = 4
+previewStatsFrame.LayoutOrder = 6
 previewStatsFrame.Parent = previewRoot
 styleCard(previewStatsFrame, Color3.fromRGB(60, 73, 98), Color3.fromRGB(38, 48, 66), Color3.fromRGB(102, 126, 168), false)
 
@@ -3326,11 +5833,63 @@ ui.previewStatsLabel = createLabel(
 enableAutoHeightLabel(ui.previewStatsLabel, 24)
 ui.previewStatsLabel.Parent = previewStatsFrame
 
+local previewActions = Instance.new("Frame")
+previewActions.Size = UDim2.new(1, 0, 0, 168)
+previewActions.BackgroundColor3 = Color3.fromRGB(20, 24, 32)
+previewActions.BorderSizePixel = 0
+previewActions.LayoutOrder = 7
+previewActions.Parent = previewRoot
+styleCard(previewActions, Color3.fromRGB(64, 91, 74), Color3.fromRGB(38, 54, 44), Color3.fromRGB(112, 176, 137), false)
+
+local previewActionsPadding = Instance.new("UIPadding")
+previewActionsPadding.PaddingTop = UDim.new(0, 10)
+previewActionsPadding.PaddingBottom = UDim.new(0, 10)
+previewActionsPadding.PaddingLeft = UDim.new(0, 10)
+previewActionsPadding.PaddingRight = UDim.new(0, 10)
+previewActionsPadding.Parent = previewActions
+
+local previewActionsTitle = createSectionTitle("Preview Actions")
+previewActionsTitle.Parent = previewActions
+
+ui.previewActionHintLabel = createLabel(
+	"Use the preview gallery above: left-click cards to toggle selection, then right-click a variant to preview it here.",
+	11,
+	Enum.Font.Gotham,
+	Color3.fromRGB(196, 221, 201),
+	30
+)
+enableAutoHeightLabel(ui.previewActionHintLabel, 24)
+ui.previewActionHintLabel.Position = UDim2.new(0, 0, 0, 24)
+ui.previewActionHintLabel.Parent = previewActions
+
+local previewActionsGrid = Instance.new("Frame")
+previewActionsGrid.Size = UDim2.new(1, 0, 0, 88)
+previewActionsGrid.BackgroundTransparency = 1
+previewActionsGrid.Position = UDim2.new(0, 0, 0, 58)
+previewActionsGrid.Parent = previewActions
+
+local previewActionsLayout = Instance.new("UIGridLayout")
+previewActionsLayout.CellPadding = UDim2.new(0, 8, 0, 8)
+previewActionsLayout.CellSize = UDim2.new(0.5, -4, 0, 40)
+previewActionsLayout.Parent = previewActionsGrid
+
+ui.previewGenerateCurrentButton = createButton("Generate Current", Color3.fromRGB(49, 155, 106), "success")
+ui.previewGenerateCurrentButton.Parent = previewActionsGrid
+
+ui.previewGenerateSelectedButton = createButton("Generate Selected", Color3.fromRGB(57, 128, 116), "teal")
+ui.previewGenerateSelectedButton.Parent = previewActionsGrid
+
+ui.previewGenerateAllButton = createButton("Generate All", Color3.fromRGB(84, 107, 146), "info")
+ui.previewGenerateAllButton.Parent = previewActionsGrid
+
+ui.previewSelectAllTabsButton = createButton("Select All", Color3.fromRGB(123, 101, 72), "warning")
+ui.previewSelectAllTabsButton.Parent = previewActionsGrid
+
 local previewControls = Instance.new("Frame")
 previewControls.Size = UDim2.new(1, 0, 0, 216)
 previewControls.BackgroundColor3 = Color3.fromRGB(20, 24, 32)
 previewControls.BorderSizePixel = 0
-previewControls.LayoutOrder = 5
+previewControls.LayoutOrder = 8
 previewControls.Parent = previewRoot
 styleCard(previewControls, Color3.fromRGB(60, 73, 98), Color3.fromRGB(38, 48, 66), Color3.fromRGB(102, 126, 168), false)
 
@@ -3374,7 +5933,7 @@ local previewDisplayControls = Instance.new("Frame")
 previewDisplayControls.Size = UDim2.new(1, 0, 0, 308)
 previewDisplayControls.BackgroundColor3 = Color3.fromRGB(20, 24, 32)
 previewDisplayControls.BorderSizePixel = 0
-previewDisplayControls.LayoutOrder = 6
+previewDisplayControls.LayoutOrder = 9
 previewDisplayControls.Parent = previewRoot
 styleCard(previewDisplayControls, Color3.fromRGB(60, 73, 98), Color3.fromRGB(38, 48, 66), Color3.fromRGB(102, 126, 168), false)
 
@@ -3448,7 +6007,7 @@ collisionInfoFrame.Size = UDim2.new(1, 0, 0, 0)
 collisionInfoFrame.BackgroundColor3 = Color3.fromRGB(20, 24, 32)
 collisionInfoFrame.BorderSizePixel = 0
 collisionInfoFrame.AutomaticSize = Enum.AutomaticSize.Y
-collisionInfoFrame.LayoutOrder = 7
+collisionInfoFrame.LayoutOrder = 10
 collisionInfoFrame.Parent = previewRoot
 styleCard(collisionInfoFrame, Color3.fromRGB(60, 73, 98), Color3.fromRGB(38, 48, 66), Color3.fromRGB(102, 126, 168), false)
 
@@ -3494,6 +6053,88 @@ ui.statusLabel = createLabel(
 	96
 )
 ui.statusLabel.Parent = statusFrame
+
+ui.activityFrame = Instance.new("Frame")
+ui.activityFrame.Size = UDim2.new(1, 0, 0, 0)
+ui.activityFrame.BackgroundColor3 = Color3.fromRGB(20, 24, 32)
+ui.activityFrame.BorderSizePixel = 0
+ui.activityFrame.AutomaticSize = Enum.AutomaticSize.Y
+ui.activityFrame.LayoutOrder = 14
+ui.activityFrame.Visible = false
+ui.activityFrame.Parent = root
+styleCard(ui.activityFrame, Color3.fromRGB(71, 97, 142), Color3.fromRGB(38, 50, 71), Color3.fromRGB(124, 173, 255), false)
+table.insert(themeRegistry.cards, {instance = ui.activityFrame, role = "panelStrong"})
+
+local activityPadding = Instance.new("UIPadding")
+activityPadding.PaddingTop = UDim.new(0, 10)
+activityPadding.PaddingBottom = UDim.new(0, 10)
+activityPadding.PaddingLeft = UDim.new(0, 10)
+activityPadding.PaddingRight = UDim.new(0, 10)
+activityPadding.Parent = ui.activityFrame
+
+local activityLayout = Instance.new("UIListLayout")
+activityLayout.Padding = UDim.new(0, 6)
+activityLayout.FillDirection = Enum.FillDirection.Vertical
+activityLayout.Parent = ui.activityFrame
+
+ui.activityTitleLabel = createSectionTitle("Generation Activity")
+ui.activityTitleLabel.Parent = ui.activityFrame
+
+ui.activityStatusLabel = createLabel(
+	"Waiting for a request.",
+	13,
+	Enum.Font.GothamBold,
+	Color3.fromRGB(214, 226, 245),
+	24
+)
+enableAutoHeightLabel(ui.activityStatusLabel, 24)
+ui.activityStatusLabel.Parent = ui.activityFrame
+
+ui.activityMetaLabel = createLabel(
+	"Batch time remaining will appear once the first result finishes.",
+	11,
+	Enum.Font.Gotham,
+	Color3.fromRGB(169, 191, 223),
+	22
+)
+enableAutoHeightLabel(ui.activityMetaLabel, 22)
+ui.activityMetaLabel.Parent = ui.activityFrame
+
+ui.activityBarFrame = Instance.new("Frame")
+ui.activityBarFrame.Size = UDim2.new(1, 0, 0, 16)
+ui.activityBarFrame.BackgroundColor3 = Color3.fromRGB(23, 31, 46)
+ui.activityBarFrame.BorderSizePixel = 0
+ui.activityBarFrame.Parent = ui.activityFrame
+createCorner(ui.activityBarFrame, 8)
+createStroke(ui.activityBarFrame, Color3.fromRGB(86, 120, 176))
+
+ui.activityBarFill = Instance.new("Frame")
+ui.activityBarFill.Size = UDim2.new(0, 0, 1, 0)
+ui.activityBarFill.BackgroundColor3 = Color3.fromRGB(92, 179, 255)
+ui.activityBarFill.BorderSizePixel = 0
+ui.activityBarFill.Parent = ui.activityBarFrame
+createCorner(ui.activityBarFill, 8)
+addVerticalGradient(ui.activityBarFill, Color3.fromRGB(143, 223, 255), Color3.fromRGB(77, 131, 255))
+
+ui.activityBarSweep = Instance.new("Frame")
+ui.activityBarSweep.Size = UDim2.new(0, 42, 1, -4)
+ui.activityBarSweep.Position = UDim2.new(0, -42, 0, 2)
+ui.activityBarSweep.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+ui.activityBarSweep.BackgroundTransparency = 0.65
+ui.activityBarSweep.BorderSizePixel = 0
+ui.activityBarSweep.Parent = ui.activityBarFrame
+createCorner(ui.activityBarSweep, 8)
+createActivityBarDecor(ui.activityBarFrame)
+
+ui.activityDetailLabel = createLabel(
+	"Preview batches and full generation both use this live tracker.",
+	11,
+	Enum.Font.Code,
+	Color3.fromRGB(185, 203, 231),
+	44
+)
+enableAutoHeightLabel(ui.activityDetailLabel, 44)
+ui.activityDetailLabel.Parent = ui.activityFrame
 
 local collisionTuningTitle = createSectionTitle("Collision Tuning")
 collisionTuningTitle.LayoutOrder = 19
@@ -3595,31 +6236,1396 @@ function setStatus(message, tone)
 	end
 end
 
-local previewBusy = false
-local activePreviewModel = nil
-local activePreviewRequest = nil
-local previewOrbitYaw = math.rad(45)
-local previewOrbitPitch = math.rad(20)
-local previewOrbitRadius = 18
-local previewOrbitMinRadius = 8
-local previewOrbitMaxRadius = 60
-local previewOrbitTarget = Vector3.new()
-local previewDragging = false
-local previewDragLastPosition = nil
-local previewDragInput = nil
-local previewAutoRotateEnabled = false
-local previewAutoRotateSpeed = math.rad(24)
-local previewLightingPresetName = "Studio"
-local previewBackgroundPresetName = "Cool"
-local previewRotateSpeedMode = "Normal"
-local previewShowOriginMarker = true
-local previewShowBoundsOverlay = false
-local previewCollisionOpacityMode = "Medium"
-local previewDecorationFolder = nil
-local previewDisplayButtons = {}
+local generationActivityState = {
+	active = false,
+	mode = "Generate",
+	startedAt = 0,
+	totalSteps = 0,
+	processedSteps = 0,
+	currentStep = 0,
+	currentLabel = "",
+	detail = "",
+	cacheHits = 0,
+}
+
+function stringContainsAny(source, patterns)
+	for _, pattern in ipairs(patterns) do
+		if string.find(source, pattern, 1, true) then
+			return true
+		end
+	end
+	return false
+end
+
+function smoothstep(alpha)
+	alpha = math.clamp(alpha or 0, 0, 1)
+	return alpha * alpha * (3 - (2 * alpha))
+end
+
+function fract(value)
+	return value - math.floor(value)
+end
+
+function triangleWave(value)
+	return 1 - math.abs((fract(value) * 2) - 1)
+end
+
+function computeGenerationSimulationProgress(profile, now, elapsed, baseProgress, totalSteps, activePulse)
+	local progress = baseProgress
+	local pulseAmplitude = (profile.pulseAmplitude or 0.8) * (1 / math.max(totalSteps, 1)) * 0.8
+	local pulseWave = activePulse and ((math.sin(now * (profile.pulseFrequency or 3)) + 1) * 0.5) or 0
+	local pulseProgress = pulseWave * pulseAmplitude
+	local jitter = 0
+	local motion = profile.progressMotion or "steady"
+
+	if motion == "glitch" then
+		local burst = triangleWave(now * 1.6 + (profile.seedOffset or 0))
+		progress += pulseProgress * 0.6 + burst * (0.35 / math.max(totalSteps, 1))
+		jitter = (triangleWave(now * 9.5 + (profile.seedOffset or 0) * 2.1) - 0.5) * (profile.microJitter or 0)
+	elseif motion == "scan" then
+		progress += pulseProgress * 0.45
+		progress += smoothstep(triangleWave(now * 0.35 + elapsed * 0.06)) * (0.12 / math.max(totalSteps, 1))
+		jitter = math.sin(now * 2.4 + (profile.seedOffset or 0)) * (profile.microJitter or 0)
+	elseif motion == "staged" then
+		local staged = smoothstep(triangleWave(now * 0.45 + (profile.seedOffset or 0)))
+		progress += pulseProgress * 0.3
+		progress += staged * (0.16 / math.max(totalSteps, 1))
+	elseif motion == "combo" then
+		local combo = smoothstep(triangleWave(now * 1.9 + (profile.seedOffset or 0)))
+		progress += pulseProgress * 1.15
+		progress += combo * (0.22 / math.max(totalSteps, 1))
+		jitter = (triangleWave(now * 8.5) - 0.5) * (profile.microJitter or 0)
+	elseif motion == "surge" then
+		local surge = smoothstep(triangleWave(now * 0.8 + (profile.seedOffset or 0)))
+		progress += pulseProgress * 0.65
+		progress += surge * (0.2 / math.max(totalSteps, 1))
+	elseif motion == "creep" then
+		local creep = smoothstep(math.clamp(fract(now * 0.18 + (profile.seedOffset or 0) * 0.13) * 1.15, 0, 1))
+		progress += pulseProgress * 0.18
+		progress += creep * (0.09 / math.max(totalSteps, 1))
+		jitter = math.sin(now * 1.7) * (profile.microJitter or 0)
+	elseif motion == "drift" then
+		progress += pulseProgress * 0.4
+		progress += (math.sin(now * 0.95 + (profile.seedOffset or 0)) * 0.5 + 0.5) * (0.12 / math.max(totalSteps, 1))
+	elseif motion == "lockstep" then
+		local steps = math.max(profile.quantizeSteps or (totalSteps * 3), totalSteps)
+		progress += pulseProgress * 0.25
+		progress = math.floor(math.clamp(progress, 0, 1) * steps) / steps
+	elseif motion == "grow" then
+		local organic = smoothstep(math.clamp(fract(elapsed * 0.22 + (profile.seedOffset or 0) * 0.07) * 1.1, 0, 1))
+		progress += pulseProgress * 0.5
+		progress += organic * (0.14 / math.max(totalSteps, 1))
+	else
+		progress += pulseProgress
+	end
+
+	progress += jitter
+	return math.clamp(progress, profile.progressFloor or 0.04, 1)
+end
+
+function computeGenerationShimmerOffset(profile, barWidth, shimmerSpan, now, elapsed)
+	local width = math.max(barWidth, shimmerSpan, 1)
+	local speed = profile.sweepSpeed or 120
+	local mode = profile.shimmerMode or "linear"
+
+	if mode == "burst" then
+		local travel = width + shimmerSpan
+		local burstPhase = fract(now * speed * 0.014 + (profile.seedOffset or 0) * 0.17)
+		return math.floor((burstPhase * burstPhase) * travel) - shimmerSpan
+	elseif mode == "step" then
+		local steps = math.max(profile.quantizeSteps or 12, 2)
+		local travel = width - shimmerSpan
+		local phase = math.floor(fract(now * speed * 0.01) * steps) / steps
+		return math.floor(math.max(travel, 1) * phase)
+	elseif mode == "surge" then
+		local travel = width - shimmerSpan
+		local phase = smoothstep(triangleWave(now * speed * 0.01 + elapsed * 0.04))
+		return math.floor(math.max(travel, 1) * phase)
+	elseif mode == "drift" then
+		local travel = width - shimmerSpan
+		local phase = math.sin(now * speed * 0.006 + (profile.seedOffset or 0)) * 0.5 + 0.5
+		return math.floor(math.max(travel, 1) * phase)
+	end
+
+	local travel = width + shimmerSpan
+	local offset = math.floor((now * speed) % travel) - shimmerSpan
+	if profile.barDirection == "reverse" then
+		return (barWidth - offset) - shimmerSpan
+	elseif profile.barDirection == "pingpong" then
+		local pingRange = math.max(barWidth - shimmerSpan, 1)
+		local pingValue = math.abs(((now * speed * 0.02) % 2) - 1)
+		return math.floor(pingRange * pingValue)
+	end
+	return offset
+end
+
+function getThemeConceptTag(lowerThemeName, lowerCategory)
+	local conceptRules = {
+		{tag = "matrix", patterns = {"matrix"}},
+		{tag = "terminal", patterns = {"fallout", "terminal", "solarized", "monochrome", "blueprint"}},
+		{tag = "arcade", patterns = {"arcade", "neon", "retro", "crt", "laser", "carnival", "toybox", "mario", "persona"}},
+		{tag = "cyber", patterns = {"cyber", "synth", "hacker", "galaxy", "nebula", "prism", "future", "mass effect", "destiny", "portal", "helldivers"}},
+		{tag = "nature", patterns = {"forest", "moss", "pine", "jade", "aurora", "rainforest", "seafoam", "mint", "animal", "stardew", "terraria", "sea of thieves"}},
+		{tag = "horror", patterns = {"noir", "obsidian", "dracula", "silent", "dead", "biohazard", "fog", "diablo", "ember", "lava", "doom"}},
+		{tag = "fantasy", patterns = {"royal", "skyrim", "witcher", "zelda", "genshin", "starlight", "elden", "monster", "warcraft", "sapphire"}},
+		{tag = "tactical", patterns = {"valorant", "apex", "fortnite", "rainbow", "counter", "battlefield", "call of duty", "steel", "construction", "halo"}},
+		{tag = "speed", patterns = {"rocket", "speed", "turismo", "sunset", "turbo", "gran", "boardwalk", "harbor", "marina", "lagoon"}},
+	}
+
+	for _, rule in ipairs(conceptRules) do
+		if stringContainsAny(lowerThemeName, rule.patterns) then
+			return rule.tag
+		end
+	end
+
+	if string.find(lowerCategory, "sci-fi", 1, true) then
+		return "cyber"
+	elseif string.find(lowerCategory, "sandbox", 1, true) then
+		return "nature"
+	elseif string.find(lowerCategory, "horror", 1, true) then
+		return "horror"
+	elseif string.find(lowerCategory, "fantasy", 1, true) then
+		return "fantasy"
+	elseif string.find(lowerCategory, "competitive", 1, true) then
+		return "tactical"
+	elseif string.find(lowerCategory, "racing", 1, true) then
+		return "speed"
+	elseif string.find(lowerCategory, "arcade", 1, true) then
+		return "arcade"
+	end
+
+	return "utility"
+end
+
+function getConceptFrameSet(conceptTag)
+	if conceptTag == "matrix" then
+		return {" 101", " 110", " 001", " 111"}
+	elseif conceptTag == "terminal" then
+		return {" [=   ]", " [==  ]", " [=== ]", " [====]"}
+	elseif conceptTag == "arcade" then
+		return {" x1", " x2", " x4", " x8"}
+	elseif conceptTag == "nature" then
+		return {" .", " ..", " ...", " ...."}
+	elseif conceptTag == "horror" then
+		return {" _", " __", " ___", " __"}
+	elseif conceptTag == "fantasy" then
+		return {" *", " **", " ***", " **"}
+	elseif conceptTag == "tactical" then
+		return {" <>", " <<", " >>", " <>"}
+	elseif conceptTag == "speed" then
+		return {" /", " //", " ///", " //"}
+	elseif conceptTag == "cyber" then
+		return {" <>", " <>", " >>", " <>"}
+	end
+	return {" .", " ..", " ...", ""}
+end
+
+function getConceptAsciiFrameSet(conceptTag)
+	if conceptTag == "matrix" then
+		return {
+			"[01] [10] [11]",
+			"[10] [11] [01]",
+			"[11] [01] [10]",
+			"[01] [11] [00]",
+		}
+	elseif conceptTag == "terminal" then
+		return {
+			"> scan  [=   ]",
+			"> route [==  ]",
+			"> link  [=== ]",
+			"> exec  [====]",
+		}
+	elseif conceptTag == "arcade" then
+		return {
+			"<+> SCORE x01",
+			"<<>> SCORE x02",
+			"<##> SCORE x04",
+			"<@@> SCORE x08",
+		}
+	elseif conceptTag == "nature" then
+		return {
+			" .  /\\  . ",
+			" . /\\/\\ . ",
+			" ./\\/\\/\\. ",
+			" . \\/\\/ . ",
+		}
+	elseif conceptTag == "horror" then
+		return {
+			" .:: SHIVER ::. ",
+			" ::.. SHIVER ..:: ",
+			" .:: ECHO ::. ",
+			" ::.. ECHO ..:: ",
+		}
+	elseif conceptTag == "fantasy" then
+		return {
+			" <*> rune weave <*> ",
+			" <+> sigil cast <+> ",
+			" <*> relic pulse <*> ",
+			" <+> aether hum <+> ",
+		}
+	elseif conceptTag == "tactical" then
+		return {
+			"[LOCK] >> <<",
+			"[SCAN] || ||",
+			"[TRACK] == ==",
+			"[READY] >> <<",
+		}
+	elseif conceptTag == "speed" then
+		return {
+			"// apex burn //",
+			"/// overtake ///",
+			"//// redline ////",
+			"/// launch ///",
+		}
+	elseif conceptTag == "cyber" then
+		return {
+			"<net> :: uplink ::",
+			"<sig> == pulse ==",
+			"<sys> >> sync <<",
+			"<io>  :: flux ::",
+		}
+	end
+
+	return {
+		"[ build .   ]",
+		"[ build ..  ]",
+		"[ build ... ]",
+		"[ build ....]",
+	}
+end
+
+function getAnimatedAsciiPanel(profile, now, progress)
+	local frames = profile.asciiFrames or getConceptAsciiFrameSet("utility")
+	local frameIndex = (math.floor(now * (profile.asciiRate or 4.5)) % #frames) + 1
+	local currentFrame = frames[frameIndex]
+	local width = math.max(profile.asciiWidth or 16, #currentFrame)
+	local filled = math.clamp(math.floor(width * progress + 0.5), 0, width)
+	local empty = math.max(width - filled, 0)
+	local meter = "[" .. string.rep("#", filled) .. string.rep(".", empty) .. "]"
+	local label = string.upper(profile.conceptTag or "UTILITY")
+	return string.format("%s\n%s\n%s", currentFrame, meter, label)
+end
+
+function getConceptBarGlyphSet(conceptTag)
+	if conceptTag == "matrix" then
+		return {"0x1F", "0x2A", "0x3C", "0x5D"}
+	elseif conceptTag == "terminal" then
+		return {"SYS", "I/O", "MEM", "CLK"}
+	elseif conceptTag == "arcade" then
+		return {"1UP", "2UP", "BONUS", "x8"}
+	elseif conceptTag == "nature" then
+		return {"BLOOM", "ROOT", "CANOPY", "GROW"}
+	elseif conceptTag == "horror" then
+		return {"ECHO", "VEIL", "ASH", "SHADE"}
+	elseif conceptTag == "fantasy" then
+		return {"RUNE", "SIGIL", "AETHER", "RELIC"}
+	elseif conceptTag == "tactical" then
+		return {"LOCK", "TRACK", "SYNC", "MARK"}
+	elseif conceptTag == "speed" then
+		return {"APEX", "RUSH", "DRIVE", "REDLINE"}
+	elseif conceptTag == "cyber" then
+		return {"NET", "PULSE", "LINK", "SYNC"}
+	end
+	return {"BUILD", "SIM", "FLOW", "DONE"}
+end
+
+function getConceptBarSceneFrames(conceptTag)
+	if conceptTag == "matrix" then
+		return {
+			"0101//CODE",
+			"1011//RAIN",
+			"0010//GRID",
+			"1110//SYNC",
+		}
+	elseif conceptTag == "terminal" then
+		return {
+			">boot  ::",
+			">parse ::",
+			">route ::",
+			">exec  ::",
+		}
+	elseif conceptTag == "arcade" then
+		return {
+			"<*> bonus",
+			"<#> combo",
+			"<@> x4 up",
+			"<$> clear",
+		}
+	elseif conceptTag == "nature" then
+		return {
+			"/\\ sprout",
+			"/\\\\ bloom",
+			"|| root ",
+			"~~ grove",
+		}
+	elseif conceptTag == "horror" then
+		return {
+			".. ash ..",
+			":: veil :",
+			".. echo .",
+			": shade :",
+		}
+	elseif conceptTag == "fantasy" then
+		return {
+			"<*> rune ",
+			"<+> sigil",
+			"{*} relic",
+			"{+} aethr",
+		}
+	elseif conceptTag == "tactical" then
+		return {
+			"[ ] lock",
+			"[x] scan",
+			"[=] track",
+			"[>] ready",
+		}
+	elseif conceptTag == "speed" then
+		return {
+			"// launch",
+			"/// apex ",
+			"//// rush",
+			"/// burn ",
+		}
+	elseif conceptTag == "cyber" then
+		return {
+			"<> uplink",
+			"== pulse ",
+			">> sync  ",
+			":: flux  ",
+		}
+	end
+	return {
+		"[ build ]",
+		"[ shape ]",
+		"[ refine]",
+		"[ final ]",
+	}
+end
+
+function getConceptPhraseBank(conceptTag)
+	if conceptTag == "matrix" then
+		return {
+			titles = {"Construct", "Simulation", "Code Stream"},
+			previewTitles = {"Matrix Preview", "Construct Preview"},
+			detailPrefix = "code-rain: ",
+			phases = {"Decrypting source stream", "Tracing construct wireframe", "Resolving green-code lattice", "Compiling simulation shell", "Rendering residual self-image"},
+		}
+	elseif conceptTag == "terminal" then
+		return {
+			titles = {"Terminal Fabrication", "Pip-Boy Fabrication", "Drafting Bay"},
+			previewTitles = {"Terminal Preview", "Pip-Boy Preview", "Blueprint Preview"},
+			detailPrefix = "sys: ",
+			phases = {"Booting fabrication shell", "Parsing build directives", "Routing assembly logs", "Calibrating output channel", "Writing final payload"},
+		}
+	elseif conceptTag == "arcade" then
+		return {
+			titles = {"Arcade Fabrication", "Bonus Fabrication", "Attract Mode"},
+			previewTitles = {"Arcade Preview", "Bonus Preview"},
+			detailPrefix = "bonus: ",
+			phases = {"Loading attract mode", "Spawning combo geometry", "Stacking bonus layers", "Charging neon pass", "Flashing finish state"},
+		}
+	elseif conceptTag == "nature" then
+		return {
+			titles = {"Growth Pass", "Canopy Build", "Organic Assembly"},
+			previewTitles = {"Growth Preview", "Canopy Preview"},
+			detailPrefix = "bloom: ",
+			phases = {"Seeding form", "Growing outer silhouette", "Branching support shapes", "Settling surface rhythm", "Finishing natural pass"},
+		}
+	elseif conceptTag == "horror" then
+		return {
+			titles = {"Hull Forge", "Ash Pass", "Shadow Assembly"},
+			previewTitles = {"Hull Preview", "Shadow Preview"},
+			detailPrefix = "echo: ",
+			phases = {"Pulling shape from shadow", "Creeping across silhouette", "Stitching fractured surfaces", "Settling pressure points", "Locking final shell"},
+		}
+	elseif conceptTag == "fantasy" then
+		return {
+			titles = {"Relic Forge", "Arcane Assembly", "Mythic Build"},
+			previewTitles = {"Relic Preview", "Arcane Preview"},
+			detailPrefix = "aether: ",
+			phases = {"Invoking base form", "Etching ornate silhouette", "Balancing layered structure", "Infusing finish accents", "Sealing final relic"},
+		}
+	elseif conceptTag == "tactical" then
+		return {
+			titles = {"Strike Fabrication", "Tactical Pass", "Loadout Build"},
+			previewTitles = {"Strike Preview", "Tactical Preview"},
+			detailPrefix = "ops: ",
+			phases = {"Marking target geometry", "Locking tactical profile", "Stacking utility structure", "Clearing final checks", "Deploying result"},
+		}
+	elseif conceptTag == "speed" then
+		return {
+			titles = {"Velocity Build", "Sprint Fabrication", "Overtake Pass"},
+			previewTitles = {"Velocity Preview", "Sprint Preview"},
+			detailPrefix = "pace: ",
+			phases = {"Launching first pass", "Drafting fast silhouette", "Tightening apex geometry", "Charging finish line", "Crossing final state"},
+		}
+	elseif conceptTag == "cyber" then
+		return {
+			titles = {"Signal Forge", "Cyber Assembly", "Neural Pass"},
+			previewTitles = {"Signal Preview", "Cyber Preview"},
+			detailPrefix = "signal: ",
+			phases = {"Initializing signal path", "Weaving luminous scaffolds", "Snapping modular structure", "Amplifying surface energy", "Syncing final output"},
+		}
+	end
+
+	return {
+		titles = {"Generation", "Fabrication", "Build Pass"},
+		previewTitles = {"Preview", "Build Preview"},
+		detailPrefix = nil,
+		phases = {"Drafting shapes", "Refining silhouette", "Balancing structure", "Resolving surfaces", "Finalizing result"},
+	}
+end
+
+function getThemeUiSoundProfile()
+	local lowerThemeName = string.lower(themeState.name or "")
+	local lowerCategory = string.lower(getThemeCategory(themeState.name) or "")
+	local conceptTag = getThemeConceptTag(lowerThemeName, lowerCategory)
+	local profile = {
+		conceptTag = conceptTag,
+		soundId = "rbxasset://sounds/electronicpingshort.wav",
+		buttonSpeed = 1,
+		buttonVolume = 0.12,
+		buttonTimePosition = 0,
+		changeSpeed = 1.1,
+		changeVolume = 0.2,
+		changeTimePosition = 0,
+		changeEcho = false,
+	}
+
+	if conceptTag == "matrix" then
+		profile.buttonSpeed = 0.86
+		profile.buttonVolume = 0.14
+		profile.buttonTimePosition = 0.02
+		profile.changeSpeed = 0.92
+		profile.changeVolume = 0.24
+		profile.changeEcho = true
+	elseif conceptTag == "terminal" then
+		profile.buttonSpeed = 0.78
+		profile.buttonVolume = 0.13
+		profile.buttonTimePosition = 0.01
+		profile.changeSpeed = 0.84
+		profile.changeVolume = 0.22
+		profile.changeEcho = true
+	elseif conceptTag == "arcade" then
+		profile.buttonSpeed = 1.34
+		profile.buttonVolume = 0.16
+		profile.changeSpeed = 1.46
+		profile.changeVolume = 0.24
+		profile.changeEcho = true
+	elseif conceptTag == "cyber" then
+		profile.buttonSpeed = 1.18
+		profile.buttonVolume = 0.15
+		profile.changeSpeed = 1.28
+		profile.changeVolume = 0.24
+		profile.changeEcho = true
+	elseif conceptTag == "nature" then
+		profile.buttonSpeed = 0.96
+		profile.buttonVolume = 0.1
+		profile.changeSpeed = 1.02
+		profile.changeVolume = 0.18
+	elseif conceptTag == "horror" then
+		profile.buttonSpeed = 0.68
+		profile.buttonVolume = 0.1
+		profile.buttonTimePosition = 0.03
+		profile.changeSpeed = 0.74
+		profile.changeVolume = 0.18
+	elseif conceptTag == "fantasy" then
+		profile.buttonSpeed = 1.08
+		profile.buttonVolume = 0.11
+		profile.changeSpeed = 1.16
+		profile.changeVolume = 0.2
+		profile.changeEcho = true
+	elseif conceptTag == "tactical" then
+		profile.buttonSpeed = 0.9
+		profile.buttonVolume = 0.12
+		profile.changeSpeed = 1
+		profile.changeVolume = 0.2
+	elseif conceptTag == "speed" then
+		profile.buttonSpeed = 1.24
+		profile.buttonVolume = 0.14
+		profile.changeSpeed = 1.38
+		profile.changeVolume = 0.22
+	end
+
+	if themeState.variant == "Soft" then
+		profile.buttonVolume *= 0.85
+		profile.changeVolume *= 0.85
+		profile.buttonSpeed *= 0.96
+	elseif themeState.variant == "Vivid" then
+		profile.buttonVolume *= 1.12
+		profile.changeVolume *= 1.12
+		profile.buttonSpeed *= 1.04
+	elseif themeState.variant == "Noir" then
+		profile.buttonSpeed *= 0.93
+		profile.changeSpeed *= 0.93
+	end
+
+	if themeState.tone == "Warm" then
+		profile.buttonSpeed *= 0.97
+		profile.changeSpeed *= 0.97
+	elseif themeState.tone == "Cool" then
+		profile.buttonSpeed *= 1.02
+		profile.changeSpeed *= 1.03
+	elseif themeState.tone == "Neon" then
+		profile.buttonSpeed *= 1.06
+		profile.changeSpeed *= 1.08
+		profile.changeEcho = true
+	end
+
+	if themeState.contrast == "Punchy" then
+		profile.buttonVolume *= 1.08
+		profile.changeVolume *= 1.1
+	elseif themeState.contrast == "Soft" then
+		profile.buttonVolume *= 0.9
+		profile.changeVolume *= 0.9
+	end
+
+	return profile
+end
+
+function clampNumber(value, minValue, maxValue)
+	if value < minValue then
+		return minValue
+	elseif value > maxValue then
+		return maxValue
+	end
+	return value
+end
+
+function getButtonSfxIntent(sourceButton)
+	if not sourceButton then
+		return "generic"
+	end
+
+	local role = string.lower(tostring(sourceButton:GetAttribute("ThemeRole") or "secondary"))
+	local combined = string.lower(table.concat({
+		tostring(sourceButton.Text or ""),
+		tostring(sourceButton.Name or ""),
+		tostring(sourceButton:GetAttribute("ThemeSfxHint") or ""),
+	}, " "))
+
+	local function contains(pattern)
+		return string.find(combined, pattern, 1, true) ~= nil
+	end
+
+	if role == "warning" or role == "danger" or contains("clear") or contains("reset") then
+		return "warning"
+	elseif contains("generate") or contains("build") or contains("create") or contains("regenerate") or contains("runtime") then
+		return "generate"
+	elseif contains("preview") or contains("focus") or contains("refresh") or contains("view") or contains("rotate") or contains("zoom") then
+		return "preview"
+	elseif contains("toggle") or contains("show") or contains("hide") or contains("enable") or contains("disable") or contains("include") or contains("anchored") or contains("texture") or contains("audio volume") or contains("opacity") then
+		return "toggle"
+	elseif contains("theme") or contains("style") or contains("typography") or contains("tone") or contains("contrast") then
+		return "theme"
+	elseif contains("settings") or contains("guide") or contains("search") or contains("browse") or contains("open") or contains("close") then
+		return "navigation"
+	elseif contains("random") or contains("seed") or contains("favorite") or contains("experimental") then
+		return "utility"
+	elseif contains("select") or contains("keep") or contains("confirm") or contains("store") or contains("collision") then
+		return "confirm"
+	end
+
+	if role == "active" or role == "success" then
+		return "confirm"
+	elseif role == "muted" then
+		return "toggle"
+	elseif role == "accent" or role == "teal" or role == "info" then
+		return "navigation"
+	end
+
+	return "generic"
+end
+
+function getProceduralButtonSoundSignature(sourceButton, profile)
+	local intent = getButtonSfxIntent(sourceButton)
+	local signature = {
+		intent = intent,
+		soundId = profile.soundId,
+		primarySpeed = profile.buttonSpeed,
+		primaryVolume = profile.buttonVolume,
+		primaryTimePosition = profile.buttonTimePosition,
+		layers = {},
+	}
+
+	local role = sourceButton and string.lower(tostring(sourceButton:GetAttribute("ThemeRole") or "secondary")) or "secondary"
+	local conceptTag = profile.conceptTag
+
+	if intent == "generate" then
+		signature.primarySpeed *= 0.94
+		signature.primaryVolume *= 1.18
+		signature.primaryTimePosition += 0.012
+		table.insert(signature.layers, {delay = 0.04, speed = 1.12, volume = 0.58, timeOffset = 0.024})
+		if conceptTag == "speed" or conceptTag == "arcade" or conceptTag == "cyber" then
+			table.insert(signature.layers, {delay = 0.075, speed = 1.24, volume = 0.42, timeOffset = 0.036})
+		end
+	elseif intent == "preview" then
+		signature.primarySpeed *= 1.08
+		signature.primaryVolume *= 0.96
+		signature.primaryTimePosition += 0.018
+		table.insert(signature.layers, {delay = 0.03, speed = 1.18, volume = 0.34, timeOffset = 0.03})
+	elseif intent == "toggle" then
+		signature.primarySpeed *= 1.02
+		signature.primaryVolume *= 0.82
+		signature.primaryTimePosition += 0.006
+		table.insert(signature.layers, {delay = 0.028, speed = 0.94, volume = 0.24, timeOffset = 0.01})
+	elseif intent == "theme" then
+		signature.primarySpeed *= 1.06
+		signature.primaryVolume *= 1.02
+		signature.primaryTimePosition += 0.02
+		table.insert(signature.layers, {delay = 0.05, speed = 1.16, volume = 0.38, timeOffset = 0.034})
+		if conceptTag == "fantasy" or conceptTag == "cyber" or conceptTag == "arcade" then
+			table.insert(signature.layers, {delay = 0.09, speed = 1.28, volume = 0.24, timeOffset = 0.04})
+		end
+	elseif intent == "navigation" then
+		signature.primarySpeed *= 1.14
+		signature.primaryVolume *= 0.88
+		signature.primaryTimePosition += 0.016
+	elseif intent == "utility" then
+		signature.primarySpeed *= 1.12
+		signature.primaryVolume *= 0.92
+		signature.primaryTimePosition += 0.014
+		table.insert(signature.layers, {delay = 0.024, speed = 1.26, volume = 0.22, timeOffset = 0.02})
+	elseif intent == "confirm" then
+		signature.primarySpeed *= 0.98
+		signature.primaryVolume *= 1.04
+		signature.primaryTimePosition += 0.01
+		table.insert(signature.layers, {delay = 0.036, speed = 1.08, volume = 0.32, timeOffset = 0.022})
+	elseif intent == "warning" then
+		signature.primarySpeed *= 0.82
+		signature.primaryVolume *= 1.08
+		signature.primaryTimePosition += 0.028
+		table.insert(signature.layers, {delay = 0.055, speed = 0.72, volume = 0.4, timeOffset = 0.04})
+	end
+
+	if role == "warning" or role == "danger" then
+		signature.primarySpeed *= 0.94
+		signature.primaryVolume *= 1.08
+	elseif role == "active" or role == "success" then
+		signature.primarySpeed *= 1.03
+		signature.primaryVolume *= 1.04
+	elseif role == "muted" then
+		signature.primaryVolume *= 0.82
+	end
+
+	if conceptTag == "matrix" or conceptTag == "terminal" then
+		signature.primarySpeed *= 0.95
+		signature.primaryTimePosition += 0.004
+	elseif conceptTag == "nature" then
+		signature.primaryVolume *= 0.9
+		signature.primarySpeed *= 0.97
+	elseif conceptTag == "horror" then
+		signature.primarySpeed *= 0.88
+		signature.primaryVolume *= 0.94
+		signature.primaryTimePosition += 0.012
+	elseif conceptTag == "speed" or conceptTag == "arcade" then
+		signature.primarySpeed *= 1.06
+	end
+
+	signature.primarySpeed = clampNumber(signature.primarySpeed, 0.58, 1.7)
+	signature.primaryVolume = clampNumber(signature.primaryVolume, 0, 0.32)
+	signature.primaryTimePosition = clampNumber(signature.primaryTimePosition, 0, 0.12)
+
+	for _, layer in ipairs(signature.layers) do
+		layer.speed = clampNumber(signature.primarySpeed * layer.speed, 0.58, 1.85)
+		layer.volume = clampNumber(signature.primaryVolume * layer.volume, 0, 0.22)
+		layer.timePosition = clampNumber(signature.primaryTimePosition + (layer.timeOffset or 0), 0, 0.14)
+	end
+
+	return signature
+end
+
+function playThemeUiSoundLayer(soundId, baseName, timePosition, playbackSpeed, volume, delaySeconds)
+	if volume <= 0 then
+		return
+	end
+
+	themeAudioState.soundSerial = (themeAudioState.soundSerial % 12) + 1
+	local soundName = string.format("%s_%d", baseName, themeAudioState.soundSerial)
+	local sound = ensureThemeUiSound(soundName)
+	sound.SoundId = soundId
+	sound.TimePosition = timePosition
+	sound.PlaybackSpeed = playbackSpeed
+	sound.Volume = volume
+
+	local function startPlayback()
+		if sound.Volume > 0 then
+			sound:Play()
+		end
+	end
+
+	if delaySeconds and delaySeconds > 0 then
+		task.delay(delaySeconds, startPlayback)
+	else
+		startPlayback()
+	end
+end
+
+function ensureThemeUiSound(soundName)
+	local existing = widget:FindFirstChild(soundName)
+	if existing and existing:IsA("Sound") then
+		return existing
+	end
+
+	local sound = Instance.new("Sound")
+	sound.Name = soundName
+	sound.SoundId = "rbxasset://sounds/electronicpingshort.wav"
+	sound.RollOffMode = Enum.RollOffMode.Linear
+	sound.Parent = widget
+	return sound
+end
+
+function playThemeUiSound(kind, sourceButton)
+	local profile = getThemeUiSoundProfile()
+	local now = os.clock()
+	if kind == "button_press" and now - themeAudioState.lastButtonAt < 0.045 then
+		return
+	end
+	if kind == "button_press" then
+		themeAudioState.lastButtonAt = now
+	end
+
+	if kind == "theme_change" then
+		local sound = ensureThemeUiSound("ThemeChangeSound")
+		sound.SoundId = profile.soundId
+		sound.TimePosition = profile.changeTimePosition
+		sound.PlaybackSpeed = profile.changeSpeed
+		sound.Volume = profile.changeVolume * getAudioVolumeMultiplier(themeChangeAudioEnabled, themeChangeAudioVolumeLevel)
+		if sound.Volume <= 0 then
+			return
+		end
+		sound:Play()
+
+		if profile.changeEcho then
+			local echoSpeed = sound.PlaybackSpeed * (profile.conceptTag == "horror" and 0.92 or 1.08)
+			local echoVolume = sound.Volume * 0.5
+			task.delay(0.05, function()
+				local echoSound = ensureThemeUiSound("ThemeChangeEchoSound")
+				echoSound.SoundId = profile.soundId
+				echoSound.TimePosition = sound.TimePosition
+				echoSound.PlaybackSpeed = echoSpeed
+				echoSound.Volume = echoVolume
+				if echoSound.Volume > 0 then
+					echoSound:Play()
+				end
+			end)
+		end
+		return
+	end
+
+	local volumeMultiplier = getAudioVolumeMultiplier(uiAudioEnabled, uiAudioVolumeLevel)
+	local signature = getProceduralButtonSoundSignature(sourceButton, profile)
+	local primaryVolume = signature.primaryVolume * volumeMultiplier
+	if primaryVolume <= 0 then
+		return
+	end
+
+	playThemeUiSoundLayer(
+		signature.soundId,
+		"ThemeButtonSound",
+		signature.primaryTimePosition,
+		signature.primarySpeed,
+		primaryVolume,
+		0
+	)
+
+	for _, layer in ipairs(signature.layers) do
+		playThemeUiSoundLayer(
+			signature.soundId,
+			"ThemeButtonLayerSound",
+			layer.timePosition,
+			layer.speed,
+			layer.volume * volumeMultiplier,
+			layer.delay
+		)
+	end
+
+	if signature.intent == "theme" and profile.changeEcho then
+		local echoSpeed = signature.primarySpeed * (profile.conceptTag == "horror" and 0.94 or 1.1)
+		local echoVolume = primaryVolume * 0.34
+		task.delay(0.05, function()
+			local echoSound = ensureThemeUiSound("ThemeButtonThemeEchoSound")
+			echoSound.SoundId = signature.soundId
+			echoSound.TimePosition = signature.primaryTimePosition
+			echoSound.PlaybackSpeed = echoSpeed
+			echoSound.Volume = echoVolume
+			if echoSound.Volume > 0 then
+				echoSound:Play()
+			end
+		end)
+	end
+end
+
+function playGenerationCompletionSound(kind)
+	if not variationCompletionAudioEnabled then
+		return
+	end
+
+	local volumeMultiplier = getCompletionAudioVolumeMultiplier()
+	if volumeMultiplier <= 0 then
+		return
+	end
+
+	local profile = getThemeUiSoundProfile()
+	local concept = string.lower(profile.conceptTag or "")
+	local soundId = "rbxasset://sounds/electronicpingshort.wav"
+	local baseTimePosition = 0.01
+	local baseVolume = clampNumber(0.26 * volumeMultiplier, 0.12, 0.5)
+	if baseVolume <= 0 then
+		return
+	end
+
+	if kind == "batch_complete" then
+		local firstNoteSpeed = concept == "horror" and 0.84 or (concept == "nature" and 0.98 or 1.02)
+		local secondNoteSpeed = concept == "horror" and 1.0 or (concept == "arcade" and 1.34 or 1.26)
+		playThemeUiSoundLayer(soundId, "ThemeBatchCompleteTaSound", baseTimePosition, firstNoteSpeed, baseVolume * 0.92, 0)
+		playThemeUiSoundLayer(soundId, "ThemeBatchCompleteTaTaSound", baseTimePosition, secondNoteSpeed, baseVolume * 1.18, 0.18)
+		return
+	end
+
+	local completionSpeed = concept == "terminal" and 1.1 or (concept == "nature" and 0.96 or 1.04)
+	playThemeUiSoundLayer(soundId, "ThemeVariationCompleteSound", baseTimePosition, completionSpeed, baseVolume * 0.86, 0)
+	playThemeUiSoundLayer(soundId, "ThemeVariationCompleteLiftSound", baseTimePosition, completionSpeed * 1.16, baseVolume * 0.62, 0.06)
+end
+
+function getGenerationActivityThemeProfile()
+	local lowerThemeName = string.lower(themeState.name or "")
+	local lowerCategory = string.lower(getThemeCategory(themeState.name) or "")
+	local themeHash = 0
+	for index = 1, #lowerThemeName do
+		themeHash = (themeHash + string.byte(lowerThemeName, index) * index) % 100000
+	end
+	local conceptTag = getThemeConceptTag(lowerThemeName, lowerCategory)
+	local conceptBank = getConceptPhraseBank(conceptTag)
+	local defaultTitle = conceptBank.titles[(themeHash % #conceptBank.titles) + 1]
+	local defaultPreviewTitle = conceptBank.previewTitles[(themeHash % #conceptBank.previewTitles) + 1]
+	local profile = {
+		titlePrefix = defaultTitle,
+		previewTitlePrefix = defaultPreviewTitle,
+		animationStyle = "sweep",
+		phases = conceptBank.phases,
+		fillTop = (themeState.current.buttons.info or Color3.fromRGB(143, 223, 255)):Lerp(Color3.fromRGB(255, 255, 255), 0.28),
+		fillBottom = themeState.current.buttons.active or Color3.fromRGB(77, 131, 255),
+		sweepTransparency = 0.65,
+		sweepSpan = 42,
+		sweepSpeed = 120,
+		quantizeSteps = nil,
+		suffixFrames = getConceptFrameSet(conceptTag),
+		detailPrefix = conceptBank.detailPrefix,
+		barDirection = "forward",
+		pulseFrequency = 3,
+		pulseAmplitude = 0.8,
+		microJitter = 0,
+		progressMotion = "steady",
+		progressFloor = 0.04,
+		shimmerMode = "linear",
+		phaseRate = 1.5,
+		seedOffset = (themeHash % 4096) / 4096,
+		font = themeState.current.typography and themeState.current.typography.body or Enum.Font.Gotham,
+		titleFont = themeState.current.typography and themeState.current.typography.title or Enum.Font.GothamBold,
+		asciiFrames = getConceptAsciiFrameSet(conceptTag),
+		asciiRate = 4.5,
+		asciiWidth = 18,
+		barVisualStyle = "solid",
+		barGlyphFrames = getConceptBarGlyphSet(conceptTag),
+		barSceneFrames = getConceptBarSceneFrames(conceptTag),
+		barSegmentCount = 12,
+		barNodeSize = 10,
+	}
+
+	if conceptTag == "matrix" then
+		profile.animationStyle = "matrix"
+		profile.fillTop = Color3.fromRGB(148, 255, 169)
+		profile.fillBottom = Color3.fromRGB(34, 176, 86)
+		profile.sweepTransparency = 0.28
+		profile.sweepSpan = 14
+		profile.sweepSpeed = 210
+		profile.quantizeSteps = 28
+		profile.font = Enum.Font.Code
+		profile.titleFont = Enum.Font.Code
+		profile.progressMotion = "glitch"
+		profile.pulseAmplitude = 0.55
+		profile.microJitter = 0.016
+		profile.shimmerMode = "burst"
+		profile.phaseRate = 2.2
+		profile.asciiRate = 8.5
+		profile.asciiWidth = 16
+		profile.barVisualStyle = "matrix"
+		profile.barSegmentCount = 12
+		profile.barNodeSize = 8
+	elseif conceptTag == "terminal" then
+		profile.fillTop = Color3.fromRGB(164, 255, 146)
+		profile.fillBottom = Color3.fromRGB(78, 201, 103)
+		profile.sweepTransparency = 0.22
+		profile.sweepSpan = 18
+		profile.sweepSpeed = 72
+		profile.animationStyle = string.find(lowerThemeName, "blueprint", 1, true) and "grid" or "pipboy"
+		profile.quantizeSteps = 12
+		profile.barDirection = "pingpong"
+		profile.font = Enum.Font.Code
+		profile.titleFont = Enum.Font.Code
+		profile.progressMotion = string.find(lowerThemeName, "blueprint", 1, true) and "staged" or "scan"
+		profile.pulseAmplitude = 0.38
+		profile.microJitter = 0.005
+		profile.shimmerMode = "step"
+		profile.phaseRate = string.find(lowerThemeName, "blueprint", 1, true) and 0.9 or 1.1
+		profile.asciiRate = 4
+		profile.asciiWidth = 14
+		profile.barVisualStyle = string.find(lowerThemeName, "blueprint", 1, true) and "grid" or "readout"
+		profile.barNodeSize = 9
+		if string.find(lowerThemeName, "blueprint", 1, true) then
+			profile.pulseAmplitude = 0.34
+			profile.microJitter = 0.003
+			profile.detailPrefix = "[grid] "
+			profile.suffixFrames = {" /", " -", " \\", " |"}
+		elseif string.find(lowerThemeName, "fallout", 1, true) then
+			profile.titlePrefix = "Pip-Boy Fabrication"
+			profile.previewTitlePrefix = "Pip-Boy Preview"
+			profile.detailPrefix = "PIP-OS: "
+		end
+	elseif conceptTag == "arcade" then
+		profile.animationStyle = "arcade"
+		profile.sweepSpan = 56
+		profile.sweepSpeed = 168
+		profile.pulseFrequency = 9
+		profile.progressMotion = "combo"
+		profile.pulseAmplitude = 1.05
+		profile.microJitter = 0.018
+		profile.shimmerMode = "surge"
+		profile.phaseRate = 2
+		profile.asciiRate = 7
+		profile.asciiWidth = 15
+		profile.barVisualStyle = "arcade"
+		profile.barNodeSize = 12
+	else
+		local animationStyles = {
+			utility = {"sweep", "beacon", "ladder", "ripple", "pulse", "strobe"},
+			cyber = {"beacon", "pulse", "strobe", "ripple"},
+			nature = {"ripple", "pulse", "sweep", "beacon"},
+			horror = {"strobe", "pulse", "beacon", "ladder"},
+			fantasy = {"ripple", "sweep", "pulse", "beacon"},
+			tactical = {"ladder", "beacon", "strobe", "sweep"},
+			speed = {"beacon", "sweep", "ladder", "pulse"},
+		}
+		local stylePool = animationStyles[conceptTag] or animationStyles.utility
+		profile.animationStyle = stylePool[(themeHash % #stylePool) + 1]
+		profile.sweepSpan = 22 + (themeHash % 35)
+		profile.sweepSpeed = 72 + (themeHash % 120)
+		profile.sweepTransparency = 0.32 + ((themeHash % 30) / 100)
+		profile.pulseFrequency = 2 + (themeHash % 6)
+		if profile.animationStyle == "ladder" then
+			profile.quantizeSteps = 8 + (themeHash % 17)
+			profile.suffixFrames = {" [=   ]", " [==  ]", " [=== ]", " [====]"}
+		elseif profile.animationStyle == "beacon" then
+			profile.barDirection = (themeHash % 2 == 0) and "forward" or "reverse"
+			profile.suffixFrames = {" <>", " <<", " >>", " <>"}
+		elseif profile.animationStyle == "ripple" then
+			profile.barDirection = "pingpong"
+			profile.suffixFrames = {" ~", " ~~", " ~~~", " ~~"}
+		elseif profile.animationStyle == "pulse" then
+			profile.suffixFrames = {" .", " ..", " ...", " ...."}
+		elseif profile.animationStyle == "strobe" then
+			profile.quantizeSteps = 10 + (themeHash % 10)
+			profile.suffixFrames = {" [*]", " [ ]", " [*]", " [ ]"}
+		else
+			profile.suffixFrames = {" .", " ..", " ...", ""}
+		end
+	end
+
+	if profile.progressMotion == "steady" then
+		if conceptTag == "cyber" then
+			profile.progressMotion = "surge"
+			profile.pulseAmplitude = 0.92
+			profile.microJitter = 0.01
+			profile.shimmerMode = "surge"
+			profile.phaseRate = 1.8
+		elseif conceptTag == "nature" then
+			profile.progressMotion = "grow"
+			profile.pulseAmplitude = 0.56
+			profile.microJitter = 0.004
+			profile.shimmerMode = "drift"
+			profile.phaseRate = 1.2
+		elseif conceptTag == "horror" then
+			profile.progressMotion = "creep"
+			profile.pulseAmplitude = 0.24
+			profile.microJitter = 0.007
+			profile.shimmerMode = "drift"
+			profile.phaseRate = 0.8
+		elseif conceptTag == "fantasy" then
+			profile.progressMotion = "drift"
+			profile.pulseAmplitude = 0.48
+			profile.microJitter = 0.004
+			profile.shimmerMode = "drift"
+			profile.phaseRate = 1
+		elseif conceptTag == "tactical" or conceptTag == "speed" then
+			profile.progressMotion = "lockstep"
+			profile.pulseAmplitude = 0.46
+			profile.microJitter = 0.006
+			profile.shimmerMode = "step"
+			profile.phaseRate = conceptTag == "speed" and 2 or 1.7
+			profile.quantizeSteps = profile.quantizeSteps or (10 + (themeHash % 8))
+		end
+	end
+
+	if profile.barVisualStyle == "solid" then
+		if conceptTag == "cyber" then
+			profile.barVisualStyle = "circuit"
+		elseif conceptTag == "nature" then
+			profile.barVisualStyle = "organic"
+		elseif conceptTag == "horror" then
+			profile.barVisualStyle = "ember"
+		elseif conceptTag == "fantasy" then
+			profile.barVisualStyle = "runes"
+		elseif conceptTag == "tactical" then
+			profile.barVisualStyle = "target"
+		elseif conceptTag == "speed" then
+			profile.barVisualStyle = "velocity"
+		end
+	end
+
+	if themeState.variant == "Soft" then
+		profile.pulseAmplitude *= 0.78
+		profile.microJitter *= 0.55
+		profile.sweepSpeed *= 0.9
+		profile.asciiRate *= 0.9
+	elseif themeState.variant == "Vivid" then
+		profile.pulseAmplitude *= 1.18
+		profile.microJitter += 0.004
+		profile.sweepSpeed *= 1.08
+		profile.asciiRate *= 1.08
+	elseif themeState.variant == "Noir" then
+		profile.pulseAmplitude *= 0.86
+		profile.microJitter *= 0.65
+	end
+
+	if themeState.contrast == "Punchy" then
+		profile.pulseAmplitude *= 1.12
+		profile.sweepSpeed *= 1.05
+	elseif themeState.contrast == "Soft" then
+		profile.pulseAmplitude *= 0.82
+		profile.microJitter *= 0.72
+	end
+
+	if themeState.tone == "Neon" then
+		profile.microJitter += 0.004
+		profile.sweepSpeed *= 1.07
+		profile.asciiRate *= 1.06
+	elseif themeState.tone == "Warm" then
+		profile.phaseRate *= 0.94
+	elseif themeState.tone == "Cool" then
+		profile.phaseRate *= 1.04
+	end
+
+	return profile
+end
+
+function syncGenerationActivityTheme()
+	local profile = getGenerationActivityThemeProfile()
+	local themedGroups = {
+		{
+			title = ui.activityTitleLabel,
+			status = ui.activityStatusLabel,
+			meta = ui.activityMetaLabel,
+			detail = ui.activityDetailLabel,
+			barFrame = ui.activityBarFrame,
+			barFill = ui.activityBarFill,
+			barSweep = ui.activityBarSweep,
+		},
+		{
+			title = ui.previewActivityTitleLabel,
+			status = ui.previewActivityStatusLabel,
+			meta = ui.previewActivityMetaLabel,
+			detail = ui.previewActivityDetailLabel,
+			barFrame = ui.previewActivityBarFrame,
+			barFill = ui.previewActivityBarFill,
+			barSweep = ui.previewActivityBarSweep,
+		},
+	}
+
+	for _, group in ipairs(themedGroups) do
+		if group.title then
+			local decor = ensureActivityBarDecor(group.barFrame)
+			group.title.Font = profile.titleFont
+			group.status.Font = profile.font
+			group.meta.Font = profile.font
+			group.detail.Font = profile.font
+			createStroke(group.barFrame, themeState.current.viewportStroke)
+			tweenThemeStroke(group.barFrame, themeState.current.viewportStroke)
+			tweenThemeBackground(group.barFrame, themeState.current.inputBase)
+			tweenThemeBackground(group.barFill, profile.fillBottom)
+			addVerticalGradient(group.barFill, profile.fillTop, profile.fillBottom)
+			group.barSweep.BackgroundTransparency = profile.sweepTransparency
+			if decor and decor.glyphLabel then
+				decor.glyphLabel.Font = profile.font == Enum.Font.Code and Enum.Font.Code or Enum.Font.GothamBold
+				decor.glyphLabel.TextColor3 = profile.fillTop:Lerp(Color3.fromRGB(255, 255, 255), 0.38)
+			end
+			if decor and decor.sceneLabel then
+				decor.sceneLabel.Font = Enum.Font.Code
+				decor.sceneLabel.TextColor3 = profile.fillTop:Lerp(Color3.fromRGB(255, 255, 255), 0.2)
+			end
+			if decor and decor.topLine then
+				decor.topLine.BackgroundColor3 = profile.fillTop
+			end
+			if decor and decor.bottomLine then
+				decor.bottomLine.BackgroundColor3 = profile.fillBottom
+			end
+			if decor and decor.pulseNode then
+				decor.pulseNode.BackgroundColor3 = profile.fillTop
+				decor.pulseNode.Size = UDim2.new(0, profile.barNodeSize or 10, 0, profile.barNodeSize or 10)
+			end
+			if decor and decor.segments then
+				for _, segment in ipairs(decor.segments) do
+					if segment then
+						segment.BackgroundColor3 = profile.fillTop
+					end
+				end
+			end
+		end
+	end
+end
+
+function formatDuration(seconds)
+	seconds = math.max(0, math.floor((seconds or 0) + 0.5))
+	local minutes = math.floor(seconds / 60)
+	local remainingSeconds = seconds % 60
+	if minutes > 0 then
+		return ("%dm %02ds"):format(minutes, remainingSeconds)
+	end
+	return ("%ds"):format(remainingSeconds)
+end
+
+function refreshGenerationActivityUi()
+	if not ui.activityFrame or not ui.previewActivityFrame then
+		return
+	end
+	if not generationActivityState.active then
+		ui.activityFrame.Visible = false
+		ui.previewActivityFrame.Visible = false
+		return
+	end
+
+	local now = os.clock()
+	local elapsed = math.max(0, now - generationActivityState.startedAt)
+	local totalSteps = math.max(generationActivityState.totalSteps, 1)
+	local completedSteps = math.clamp(generationActivityState.processedSteps, 0, totalSteps)
+	local profile = getGenerationActivityThemeProfile()
+	local phaseName = profile.phases[(math.floor(now * (profile.phaseRate or 1.5)) % #profile.phases) + 1]
+	local baseProgress = completedSteps / totalSteps
+	local activePulse = generationActivityState.currentStep > completedSteps and completedSteps < totalSteps
+	local displayProgress = computeGenerationSimulationProgress(profile, now, elapsed, baseProgress, totalSteps, activePulse)
+	local statusSuffix = ""
+	local detailSegments = {
+		generationActivityState.currentLabel ~= "" and generationActivityState.currentLabel or "Waiting for Roblox to return the next result.",
+		phaseName,
+		generationActivityState.detail ~= "" and generationActivityState.detail or "Live progress is estimated from completed variations.",
+	}
+	if profile.detailPrefix then
+		detailSegments[2] = profile.detailPrefix .. detailSegments[2]
+	end
+
+	if profile.animationStyle == "matrix" then
+		statusSuffix = profile.suffixFrames[(math.floor(now * 8) % #profile.suffixFrames) + 1]
+		displayProgress = math.clamp(math.floor(displayProgress * profile.quantizeSteps) / profile.quantizeSteps, 0.04, 1)
+		detailSegments[1] = "[" .. string.rep("0", (math.floor(now * 10) % 3) + 1) .. "] " .. detailSegments[1]
+	elseif profile.animationStyle == "pipboy" then
+		statusSuffix = profile.suffixFrames[(math.floor(now * 3.5) % #profile.suffixFrames) + 1]
+		displayProgress = math.clamp(math.floor(displayProgress * profile.quantizeSteps) / profile.quantizeSteps, 0.04, 1)
+		detailSegments[1] = string.format("STAT %02d %%  %s", math.floor(displayProgress * 100), detailSegments[1])
+	elseif profile.animationStyle == "terminal" then
+		statusSuffix = profile.suffixFrames[(math.floor(now * 4) % #profile.suffixFrames) + 1]
+		displayProgress = math.clamp(math.floor(displayProgress * profile.quantizeSteps) / profile.quantizeSteps, 0.04, 1)
+		detailSegments[1] = (math.floor(now * 6) % 2 == 0 and "> " or ">> ") .. detailSegments[1]
+	elseif profile.animationStyle == "grid" then
+		statusSuffix = profile.suffixFrames[(math.floor(now * 5) % #profile.suffixFrames) + 1]
+	elseif profile.animationStyle == "arcade" then
+		statusSuffix = profile.suffixFrames[(math.floor(now * 7) % #profile.suffixFrames) + 1]
+	elseif profile.animationStyle == "ladder" or profile.animationStyle == "strobe" then
+		statusSuffix = profile.suffixFrames[(math.floor(now * 5) % #profile.suffixFrames) + 1]
+		displayProgress = math.clamp(math.floor(displayProgress * profile.quantizeSteps) / profile.quantizeSteps, 0.04, 1)
+	elseif profile.animationStyle == "beacon" then
+		statusSuffix = profile.suffixFrames[(math.floor(now * 4) % #profile.suffixFrames) + 1]
+	elseif profile.animationStyle == "ripple" then
+		statusSuffix = profile.suffixFrames[(math.floor(now * 6) % #profile.suffixFrames) + 1]
+		displayProgress = math.clamp(displayProgress + (math.sin(now * profile.pulseFrequency) * 0.03), 0.04, 1)
+	elseif profile.animationStyle == "pulse" then
+		statusSuffix = profile.suffixFrames[(math.floor(now * 4) % #profile.suffixFrames) + 1]
+	else
+		statusSuffix = profile.suffixFrames[(math.floor(now * 2.5) % #profile.suffixFrames) + 1]
+	end
+	local averageSecondsPerStep = completedSteps > 0 and (elapsed / completedSteps) or nil
+	local remainingSteps = math.max(totalSteps - completedSteps, 0)
+	local etaText = averageSecondsPerStep and formatDuration(remainingSteps * averageSecondsPerStep) or "estimating..."
+	local asciiPanel = getAnimatedAsciiPanel(profile, now, displayProgress)
+	local shimmerSpan = profile.sweepSpan or 42
+	local usePreviewPanel = generationActivityState.mode == "Preview"
+	local targetFrame = usePreviewPanel and ui.previewActivityFrame or ui.activityFrame
+	local targetTitleLabel = usePreviewPanel and ui.previewActivityTitleLabel or ui.activityTitleLabel
+	local targetStatusLabel = usePreviewPanel and ui.previewActivityStatusLabel or ui.activityStatusLabel
+	local targetMetaLabel = usePreviewPanel and ui.previewActivityMetaLabel or ui.activityMetaLabel
+	local targetDetailLabel = usePreviewPanel and ui.previewActivityDetailLabel or ui.activityDetailLabel
+	local targetBarFill = usePreviewPanel and ui.previewActivityBarFill or ui.activityBarFill
+	local targetBarSweep = usePreviewPanel and ui.previewActivityBarSweep or ui.activityBarSweep
+	local targetBarFrame = usePreviewPanel and ui.previewActivityBarFrame or ui.activityBarFrame
+	local targetBarDecor = ensureActivityBarDecor(targetBarFrame)
+	local shimmerOffset = computeGenerationShimmerOffset(profile, targetBarFrame.AbsoluteSize.X, shimmerSpan, now, elapsed)
+
+	ui.activityFrame.Visible = not usePreviewPanel
+	ui.previewActivityFrame.Visible = usePreviewPanel
+	targetFrame.Visible = true
+	targetTitleLabel.Text = usePreviewPanel and profile.previewTitlePrefix or profile.titlePrefix
+	if usePreviewPanel then
+		local currentIndex = math.min(generationActivityState.currentStep, totalSteps)
+		local previewMetaParts = {
+			detailSegments[2],
+			("Elapsed %s"):format(formatDuration(elapsed)),
+			("ETA %s"):format(etaText),
+		}
+		if generationActivityState.cacheHits > 0 then
+			previewMetaParts[#previewMetaParts + 1] = ("Cache %d"):format(generationActivityState.cacheHits)
+		end
+
+		targetStatusLabel.Text = totalSteps > 1
+			and ("Preview variant %d of %d"):format(currentIndex, totalSteps)
+			or "Building preview"
+		targetMetaLabel.Text = table.concat(previewMetaParts, "  |  ")
+		targetDetailLabel.Text = ""
+		targetDetailLabel.Visible = false
+	else
+		targetStatusLabel.Text = ("%s  |  %d/%d%s"):format(
+			detailSegments[1],
+			math.min(generationActivityState.currentStep, totalSteps),
+			totalSteps,
+			statusSuffix
+		)
+		targetMetaLabel.Text = ("%s  |  Elapsed %s  |  ETA %s  |  Cache %d"):format(
+			detailSegments[2],
+			formatDuration(elapsed),
+			etaText,
+			generationActivityState.cacheHits
+		)
+		targetDetailLabel.Text = asciiPanel
+		targetDetailLabel.Visible = true
+	end
+	targetBarFill.Size = UDim2.new(displayProgress, 0, 1, 0)
+	targetBarSweep.Position = UDim2.new(0, shimmerOffset, 0, 2)
+	if targetBarDecor and targetBarDecor.glyphLabel then
+		local glyphFrames = profile.barGlyphFrames or {"BUILD"}
+		targetBarDecor.glyphLabel.Text = glyphFrames[(math.floor(now * (profile.phaseRate or 1.5) * 2) % #glyphFrames) + 1]
+	end
+	if targetBarDecor and targetBarDecor.sceneLabel then
+		local sceneFrames = profile.barSceneFrames or {"[ build ]"}
+		targetBarDecor.sceneLabel.Text = sceneFrames[(math.floor(now * (profile.phaseRate or 1.5) * 2.2) % #sceneFrames) + 1]
+	end
+	if targetBarDecor and targetBarDecor.pulseNode then
+		local nodeAlpha = math.clamp(displayProgress, 0, 1)
+		targetBarDecor.pulseNode.Position = UDim2.new(nodeAlpha, 0, 0.5, 0)
+		targetBarDecor.pulseNode.BackgroundTransparency = profile.barVisualStyle == "ember" and 0.28 or 0.14
+	end
+	if targetBarDecor and targetBarDecor.segments then
+		local activeSegments = math.max(1, math.floor((profile.barSegmentCount or #targetBarDecor.segments) * displayProgress + 0.5))
+		for index, segment in ipairs(targetBarDecor.segments) do
+			if segment then
+				segment.Visible = index <= (profile.barSegmentCount or #targetBarDecor.segments)
+				if segment.Visible then
+					local alpha = index / math.max(profile.barSegmentCount or #targetBarDecor.segments, 1)
+					local isActive = index <= activeSegments
+					if profile.barVisualStyle == "matrix" then
+						segment.BackgroundTransparency = isActive and (0.18 + ((index + math.floor(now * 10)) % 3) * 0.12) or 0.9
+						segment.Size = UDim2.new(0, 4, 1, -4 - ((index + math.floor(now * 8)) % 3))
+					elseif profile.barVisualStyle == "readout" or profile.barVisualStyle == "grid" then
+						segment.BackgroundTransparency = isActive and 0.24 or 0.88
+						segment.Size = UDim2.new(0, 3, 1, -4)
+					elseif profile.barVisualStyle == "arcade" then
+						segment.BackgroundTransparency = isActive and (0.08 + ((math.floor(now * 8) + index) % 2) * 0.08) or 0.9
+						segment.Size = UDim2.new(0, 7, 1, -4)
+					elseif profile.barVisualStyle == "organic" then
+						segment.BackgroundTransparency = isActive and 0.28 or 0.92
+						segment.Size = UDim2.new(0, 5, 0.42 + (math.sin(now * 2 + index) * 0.18 + 0.18), 0)
+						segment.Position = UDim2.new((index - 0.5) / 12, 0, 0.5, 0)
+					elseif profile.barVisualStyle == "runes" then
+						segment.BackgroundTransparency = isActive and 0.18 or 0.9
+						segment.Size = UDim2.new(0, 4, 1, -2)
+					elseif profile.barVisualStyle == "target" or profile.barVisualStyle == "velocity" or profile.barVisualStyle == "circuit" then
+						segment.BackgroundTransparency = isActive and 0.18 or 0.9
+						segment.Size = UDim2.new(0, 5, 1, -4)
+					elseif profile.barVisualStyle == "ember" then
+						segment.BackgroundTransparency = isActive and (0.22 + (1 - alpha) * 0.18) or 0.92
+						segment.Size = UDim2.new(0, 5, 0.55 + ((math.sin(now * 3 + index) + 1) * 0.12), 0)
+						segment.Position = UDim2.new((index - 0.5) / 12, 0, 0.5, 0)
+					else
+						segment.BackgroundTransparency = isActive and 0.2 or 0.9
+						segment.Size = UDim2.new(0, 6, 1, -6)
+					end
+				end
+			end
+		end
+	end
+end
+
+function beginGenerationActivity(mode, totalSteps, currentLabel, detail)
+	generationActivityState.active = true
+	generationActivityState.mode = mode or "Generate"
+	generationActivityState.startedAt = os.clock()
+	generationActivityState.totalSteps = math.max(tonumber(totalSteps) or 1, 1)
+	generationActivityState.processedSteps = 0
+	generationActivityState.currentStep = generationActivityState.totalSteps > 0 and 1 or 0
+	generationActivityState.currentLabel = currentLabel or ""
+	generationActivityState.detail = detail or ""
+	generationActivityState.cacheHits = 0
+	refreshGenerationActivityUi()
+end
+
+function updateGenerationActivity(currentStep, processedSteps, currentLabel, detail, cacheHits)
+	if not generationActivityState.active then
+		return
+	end
+	generationActivityState.currentStep = math.max(tonumber(currentStep) or generationActivityState.currentStep, 0)
+	generationActivityState.processedSteps = math.max(tonumber(processedSteps) or generationActivityState.processedSteps, 0)
+	generationActivityState.currentLabel = currentLabel or generationActivityState.currentLabel
+	generationActivityState.detail = detail or generationActivityState.detail
+	if cacheHits ~= nil then
+		generationActivityState.cacheHits = math.max(tonumber(cacheHits) or generationActivityState.cacheHits, 0)
+	end
+	refreshGenerationActivityUi()
+end
+
+function endGenerationActivity()
+	generationActivityState.active = false
+	refreshGenerationActivityUi()
+end
+
+local previewState = {
+	busy = false,
+	activeModel = nil,
+	activeRequest = nil,
+	sessions = {},
+	activeSessionIndex = 0,
+	selectedSessionIndexes = {},
+	orbitYaw = math.rad(45),
+	orbitPitch = math.rad(20),
+	orbitRadius = 18,
+	orbitMinRadius = 8,
+	orbitMaxRadius = 60,
+	orbitTarget = Vector3.new(),
+	dragging = false,
+	dragLastPosition = nil,
+	dragInput = nil,
+	autoRotateEnabled = true,
+	autoRotateSpeed = math.rad(24),
+	lightingPresetName = "Studio",
+	backgroundPresetName = "Light",
+	rotateSpeedMode = "Normal",
+	showOriginMarker = true,
+	showBoundsOverlay = false,
+	collisionOpacityMode = "Medium",
+	decorationFolder = nil,
+	displayButtons = {},
+	compareCards = {},
+	selectedPreviewCards = {},
+}
 
 function registerPreviewDisplayButton(button)
-	table.insert(previewDisplayButtons, button)
+	table.insert(previewState.displayButtons, button)
 	return button
 end
 
@@ -3666,30 +7672,30 @@ function countMeshParts(instance)
 end
 
 function getCollisionHighlightTransparency(isMeshPart)
-	if previewCollisionOpacityMode == "Low" then
+	if previewState.collisionOpacityMode == "Low" then
 		return isMeshPart and 0.68 or 0.85
 	end
-	if previewCollisionOpacityMode == "High" then
+	if previewState.collisionOpacityMode == "High" then
 		return isMeshPart and 0.22 or 0.54
 	end
 	return isMeshPart and 0.45 or 0.72
 end
 
 function ensurePreviewDecorationFolder()
-	if previewDecorationFolder and previewDecorationFolder.Parent == ui.previewWorldModel then
-		return previewDecorationFolder
+	if previewState.decorationFolder and previewState.decorationFolder.Parent == ui.previewWorldModel then
+		return previewState.decorationFolder
 	end
-	previewDecorationFolder = Instance.new("Folder")
-	previewDecorationFolder.Name = "PreviewDecorations"
-	previewDecorationFolder.Parent = ui.previewWorldModel
-	return previewDecorationFolder
+	previewState.decorationFolder = Instance.new("Folder")
+	previewState.decorationFolder.Name = "PreviewDecorations"
+	previewState.decorationFolder.Parent = ui.previewWorldModel
+	return previewState.decorationFolder
 end
 
 function clearPreviewDecorations()
-	if previewDecorationFolder and previewDecorationFolder.Parent then
-		previewDecorationFolder:Destroy()
+	if previewState.decorationFolder and previewState.decorationFolder.Parent then
+		previewState.decorationFolder:Destroy()
 	end
-	previewDecorationFolder = nil
+	previewState.decorationFolder = nil
 end
 
 function createMarkerPart(parent, name, size, cframe, color)
@@ -3711,69 +7717,76 @@ function createMarkerPart(parent, name, size, cframe, color)
 end
 
 function syncPreviewLightingButton()
-	ui.previewLightingButton.Text = "Lighting: " .. previewLightingPresetName
+	ui.previewLightingButton.Text = "Lighting: " .. previewState.lightingPresetName
 end
 
 function syncPreviewBackgroundButton()
-	ui.previewBackgroundButton.Text = "Background: " .. previewBackgroundPresetName
+	ui.previewBackgroundButton.Text = "Background: " .. previewState.backgroundPresetName
 end
 
 function syncPreviewRotateSpeedButton()
-	ui.previewRotateSpeedButton.Text = "Rotate Speed: " .. previewRotateSpeedMode
+	ui.previewRotateSpeedButton.Text = "Rotate Speed: " .. previewState.rotateSpeedMode
 end
 
 function syncPreviewOriginMarkerButton()
-	ui.previewOriginMarkerButton.Text = "Origin Marker: " .. (previewShowOriginMarker and "On" or "Off")
-	setButtonThemeRole(ui.previewOriginMarkerButton, previewShowOriginMarker and "active" or "muted")
+	ui.previewOriginMarkerButton.Text = "Origin Marker: " .. (previewState.showOriginMarker and "On" or "Off")
+	setButtonThemeRole(ui.previewOriginMarkerButton, previewState.showOriginMarker and "active" or "muted")
 end
 
 function syncPreviewBoundsButton()
-	ui.previewBoundsButton.Text = "Bounds Overlay: " .. (previewShowBoundsOverlay and "On" or "Off")
-	setButtonThemeRole(ui.previewBoundsButton, previewShowBoundsOverlay and "active" or "muted")
+	ui.previewBoundsButton.Text = "Bounds Overlay: " .. (previewState.showBoundsOverlay and "On" or "Off")
+	setButtonThemeRole(ui.previewBoundsButton, previewState.showBoundsOverlay and "active" or "muted")
 end
 
 function syncPreviewCollisionOpacityButton()
-	ui.previewCollisionOpacityButton.Text = "Collision Opacity: " .. previewCollisionOpacityMode
+	ui.previewCollisionOpacityButton.Text = "Collision Opacity: " .. previewState.collisionOpacityMode
 end
 
 function syncPreviewViewportLighting()
-	local preset = PREVIEW_LIGHTING_PRESETS[previewLightingPresetName] or PREVIEW_LIGHTING_PRESETS.Studio
+	local preset = PREVIEW_LIGHTING_PRESETS[previewState.lightingPresetName] or PREVIEW_LIGHTING_PRESETS.Studio
 	ui.previewViewport.Ambient = preset.ambient
 	ui.previewViewport.LightColor = preset.lightColor
 	ui.previewViewport.LightDirection = preset.lightDirection
 	syncPreviewLightingButton()
+	syncPreviewGalleryCards()
+	syncSelectedPreviewCards()
 end
 
 function syncPreviewViewportBackground()
-	local preset = PREVIEW_BACKGROUND_PRESETS[previewBackgroundPresetName] or PREVIEW_BACKGROUND_PRESETS.Cool
+	local preset = PREVIEW_BACKGROUND_PRESETS[previewState.backgroundPresetName] or PREVIEW_BACKGROUND_PRESETS.Cool
 	ui.previewViewport.BackgroundColor3 = preset.bottom
 	addVerticalGradient(ui.previewViewport, preset.top, preset.bottom)
 	createStroke(ui.previewViewport, preset.stroke)
+	ui.previewSelectedFrame.BackgroundColor3 = preset.bottom
+	addVerticalGradient(ui.previewSelectedFrame, preset.top, preset.bottom)
+	createStroke(ui.previewSelectedFrame, preset.stroke)
 	syncPreviewBackgroundButton()
+	syncPreviewGalleryCards()
+	syncSelectedPreviewCards()
 end
 
 function syncPreviewRotateSpeed()
-	if previewRotateSpeedMode == "Slow" then
-		previewAutoRotateSpeed = math.rad(10)
-	elseif previewRotateSpeedMode == "Fast" then
-		previewAutoRotateSpeed = math.rad(42)
+	if previewState.rotateSpeedMode == "Slow" then
+		previewState.autoRotateSpeed = math.rad(10)
+	elseif previewState.rotateSpeedMode == "Fast" then
+		previewState.autoRotateSpeed = math.rad(42)
 	else
-		previewAutoRotateSpeed = math.rad(24)
+		previewState.autoRotateSpeed = math.rad(24)
 	end
 	syncPreviewRotateSpeedButton()
 end
 
 function updatePreviewDecorations()
 	clearPreviewDecorations()
-	if not activePreviewModel then
+	if not previewState.activeModel then
 		return
 	end
 
 	local folder = ensurePreviewDecorationFolder()
-	local boundsCFrame, boundsSize = getPreviewBounds(activePreviewModel)
-	local pivotPosition = activePreviewModel:IsA("Model") and activePreviewModel:GetPivot().Position or boundsCFrame.Position
+	local boundsCFrame, boundsSize = getPreviewBounds(previewState.activeModel)
+	local pivotPosition = previewState.activeModel:IsA("Model") and previewState.activeModel:GetPivot().Position or boundsCFrame.Position
 
-	if previewShowOriginMarker then
+	if previewState.showOriginMarker then
 		local originMarkerFolder = Instance.new("Folder")
 		originMarkerFolder.Name = "OriginMarker"
 		originMarkerFolder.Parent = folder
@@ -3783,7 +7796,7 @@ function updatePreviewDecorations()
 		createMarkerPart(originMarkerFolder, "OriginZ", Vector3.new(markerScale * 0.16, markerScale * 0.16, markerScale * 2.2), CFrame.new(pivotPosition) * CFrame.new(0, 0, markerScale), Color3.fromRGB(108, 170, 255))
 	end
 
-	if previewShowBoundsOverlay then
+	if previewState.showBoundsOverlay then
 		local boundsPart = Instance.new("Part")
 		boundsPart.Name = "BoundsOverlay"
 		boundsPart.Size = Vector3.new(math.max(boundsSize.X, 0.1), math.max(boundsSize.Y, 0.1), math.max(boundsSize.Z, 0.1))
@@ -3805,23 +7818,23 @@ function updatePreviewStats()
 	if not ui.previewStatsLabel then
 		return
 	end
-	if not activePreviewModel then
+	if not previewState.activeModel then
 		ui.previewStatsLabel.Text = "No preview loaded yet.\nGenerate a preview to inspect bounds, parts, and request settings."
 		return
 	end
 
-	local boundsCFrame, boundsSize = getPreviewBounds(activePreviewModel)
+	local boundsCFrame, boundsSize = getPreviewBounds(previewState.activeModel)
 	local totalParts = 0
-	if activePreviewModel:IsA("BasePart") then
+	if previewState.activeModel:IsA("BasePart") then
 		totalParts += 1
 	end
-	for _, descendant in ipairs(activePreviewModel:GetDescendants()) do
+	for _, descendant in ipairs(previewState.activeModel:GetDescendants()) do
 		if descendant:IsA("BasePart") then
 			totalParts += 1
 		end
 	end
-	local meshParts = countMeshParts(activePreviewModel)
-	local request = activePreviewRequest
+	local meshParts = countMeshParts(previewState.activeModel)
+	local request = previewState.activeRequest
 	local lines = {
 		("Bounds: %s x %s x %s"):format(formatPreviewNumber(boundsSize.X), formatPreviewNumber(boundsSize.Y), formatPreviewNumber(boundsSize.Z)),
 		("Center: %s, %s, %s"):format(formatPreviewNumber(boundsCFrame.Position.X), formatPreviewNumber(boundsCFrame.Position.Y), formatPreviewNumber(boundsCFrame.Position.Z)),
@@ -3831,6 +7844,7 @@ function updatePreviewStats()
 	if request then
 		lines[#lines + 1] = ("Request: size %s, max tris %s, textures %s"):format(tostring(request.targetSize), tostring(request.maxTriangles), tostring(request.textures))
 		lines[#lines + 1] = ("Base %s, schema %s, seed %s, collider %s"):format(request.includeBase and "on" or "off", request.schemaName, request.seed ~= "" and request.seed or "random", request.colliderMode)
+		lines[#lines + 1] = ("Variations: %s"):format(tostring(request.variationCount or 1))
 	end
 
 	ui.previewStatsLabel.Text = table.concat(lines, "\n")
@@ -3848,6 +7862,8 @@ function setBusyState(nextBusy)
 	ui.runtimeAllButton.Active = not nextBusy
 	ui.toggleStorageButton.AutoButtonColor = not nextBusy
 	ui.toggleStorageButton.Active = not nextBusy
+	ui.regenerateSelectedButton.AutoButtonColor = not nextBusy
+	ui.regenerateSelectedButton.Active = not nextBusy
 	if nextBusy then
 		ui.generateButton.Text = "Generating..."
 	else
@@ -3855,29 +7871,409 @@ function setBusyState(nextBusy)
 	end
 end
 
-function clearPreviewModel()
-	activePreviewModel = nil
-	activePreviewRequest = nil
-	previewAutoRotateEnabled = false
+function clearPreviewDisplay()
+	local preservedModel = previewState.activeModel
+	previewState.activeModel = nil
+	previewState.activeRequest = nil
 	clearCollisionHighlights()
 	clearPreviewDecorations()
 	for _, child in ipairs(ui.previewWorldModel:GetChildren()) do
-		child:Destroy()
+		if preservedModel and child == preservedModel then
+			child.Parent = nil
+		else
+			child:Destroy()
+		end
 	end
-	ui.autoRotateButton.Text = "Auto Rotate: Off"
-	setButtonThemeRole(ui.autoRotateButton, "muted")
+	syncAutoRotateButton()
+	if ui.previewGenerateCurrentButton then
+		ui.previewGenerateCurrentButton.Text = "Generate Current"
+		setButtonThemeRole(ui.previewGenerateCurrentButton, "success")
+	end
 	ui.previewInfoLabel.Text = "Press Preview to generate a visual preview in this window."
 	updatePreviewStats()
 end
 
-function applyPreviewCamera()
-	local horizontal = math.cos(previewOrbitPitch) * previewOrbitRadius
-	local cameraOffset = Vector3.new(
-		math.cos(previewOrbitYaw) * horizontal,
-		math.sin(previewOrbitPitch) * previewOrbitRadius,
-		math.sin(previewOrbitYaw) * horizontal
+function togglePreviewSessionSelection(index)
+	if previewState.selectedSessionIndexes[index] then
+		previewState.selectedSessionIndexes[index] = nil
+	else
+		previewState.selectedSessionIndexes[index] = true
+	end
+	refreshPreviewTabs()
+	syncPreviewActionButtons()
+end
+
+function getSelectedPreviewSessionCount()
+	local total = 0
+	for _, isSelected in pairs(previewState.selectedSessionIndexes) do
+		if isSelected then
+			total += 1
+		end
+	end
+	return total
+end
+
+function getSelectedPreviewRequests()
+	local requests = {}
+	for index, session in ipairs(previewState.sessions) do
+		if previewState.selectedSessionIndexes[index] and session and session.request then
+			requests[#requests + 1] = buildSingleGenerationRequestFromPreview(session.request)
+		end
+	end
+	return requests
+end
+
+function syncPreviewActionButtons()
+	local hasCurrent = previewState.activeRequest ~= nil
+	local selectedCount = getSelectedPreviewSessionCount()
+	local totalSessions = #previewState.sessions
+	local hasBatchChoices = totalSessions > 1
+	local allSelected = totalSessions > 0 and selectedCount == totalSessions
+	local hasPartialSelection = selectedCount > 0 and not allSelected
+
+	if ui.previewGenerateCurrentButton then
+		ui.previewGenerateCurrentButton.Visible = hasCurrent
+		ui.previewGenerateCurrentButton.Active = hasCurrent and not previewState.busy
+		ui.previewGenerateCurrentButton.AutoButtonColor = hasCurrent and not previewState.busy
+	end
+	if ui.previewGenerateSelectedButton then
+		ui.previewGenerateSelectedButton.Visible = hasBatchChoices and hasPartialSelection
+		ui.previewGenerateSelectedButton.Text = selectedCount > 0
+			and ("Generate Selected (%d)"):format(selectedCount)
+			or "Generate Selected"
+		ui.previewGenerateSelectedButton.Active = hasBatchChoices and hasPartialSelection and not previewState.busy
+		ui.previewGenerateSelectedButton.AutoButtonColor = hasBatchChoices and hasPartialSelection and not previewState.busy
+	end
+	if ui.previewGenerateAllButton then
+		ui.previewGenerateAllButton.Visible = hasBatchChoices
+		ui.previewGenerateAllButton.Text = totalSessions > 0
+			and ("Generate All (%d)"):format(totalSessions)
+			or "Generate All"
+		ui.previewGenerateAllButton.Active = hasBatchChoices and not previewState.busy and totalSessions > 0
+		ui.previewGenerateAllButton.AutoButtonColor = hasBatchChoices and not previewState.busy and totalSessions > 0
+	end
+	if ui.previewSelectAllTabsButton then
+		ui.previewSelectAllTabsButton.Visible = hasBatchChoices and not allSelected
+		ui.previewSelectAllTabsButton.Text = "Select All"
+		ui.previewSelectAllTabsButton.Active = hasBatchChoices and not allSelected and not previewState.busy and totalSessions > 0
+		ui.previewSelectAllTabsButton.AutoButtonColor = hasBatchChoices and not allSelected and not previewState.busy and totalSessions > 0
+	end
+	if ui.previewActionHintLabel then
+		ui.previewActionHintLabel.Text = hasBatchChoices
+			and "Use the preview gallery above: left-click cards to toggle selection, then right-click a variant to preview it here."
+			or "Use the preview gallery above: right-click the preview card to focus the single variant, then generate it from here."
+	end
+end
+
+function clearPreviewComparePanel()
+	for _, child in ipairs(ui.previewCompareGrid:GetChildren()) do
+		if not child:IsA("UIGridLayout") then
+			child:Destroy()
+		end
+	end
+	previewState.compareCards = {}
+	ui.previewCompareFrame.Visible = false
+end
+
+function clearSelectedPreviewPanel()
+	for _, child in ipairs(ui.previewSelectedFrame:GetChildren()) do
+		if not child:IsA("UIGridLayout") and not child:IsA("UIPadding") then
+			child:Destroy()
+		end
+	end
+	previewState.selectedPreviewCards = {}
+	ui.previewSelectedFrame.Visible = false
+end
+
+function updateCompareCardCamera(card)
+	if not card or not card.model or not card.camera then
+		return
+	end
+	local boundsCFrame, boundsSize = getPreviewBounds(card.model)
+	local radius = math.max(boundsSize.X, boundsSize.Y, boundsSize.Z) * 0.9
+	local orbitRadius = math.max(radius * 2.2, 8)
+	local horizontal = math.cos(previewState.orbitPitch) * orbitRadius
+	local offset = Vector3.new(
+		math.cos(previewState.orbitYaw) * horizontal,
+		math.sin(previewState.orbitPitch) * orbitRadius,
+		math.sin(previewState.orbitYaw) * horizontal
 	)
-	ui.previewCamera.CFrame = CFrame.lookAt(previewOrbitTarget + cameraOffset, previewOrbitTarget)
+	card.camera.CFrame = CFrame.lookAt(boundsCFrame.Position + offset, boundsCFrame.Position)
+end
+
+function syncPreviewGalleryCards()
+	for _, card in ipairs(previewState.compareCards) do
+		if card.viewport then
+			card.viewport.Ambient = ui.previewViewport.Ambient
+			card.viewport.LightColor = ui.previewViewport.LightColor
+			card.viewport.LightDirection = ui.previewViewport.LightDirection
+			card.viewport.BackgroundColor3 = ui.previewViewport.BackgroundColor3
+			addVerticalGradient(card.viewport, PREVIEW_BACKGROUND_PRESETS[previewState.backgroundPresetName].top, PREVIEW_BACKGROUND_PRESETS[previewState.backgroundPresetName].bottom)
+		end
+		updateCompareCardCamera(card)
+	end
+end
+
+function updateSelectedPreviewCardCamera(card)
+	if not card or not card.model or not card.camera then
+		return
+	end
+	local boundsCFrame = select(1, getPreviewBounds(card.model))
+	local horizontal = math.cos(previewState.orbitPitch) * previewState.orbitRadius
+	local cameraOffset = Vector3.new(
+		math.cos(previewState.orbitYaw) * horizontal,
+		math.sin(previewState.orbitPitch) * previewState.orbitRadius,
+		math.sin(previewState.orbitYaw) * horizontal
+	)
+	card.camera.CFrame = CFrame.lookAt(previewState.orbitTarget + cameraOffset, boundsCFrame.Position)
+end
+
+function syncSelectedPreviewCards()
+	local preset = PREVIEW_BACKGROUND_PRESETS[previewState.backgroundPresetName] or PREVIEW_BACKGROUND_PRESETS.Cool
+	for _, card in ipairs(previewState.selectedPreviewCards) do
+		if card.viewport then
+			card.viewport.Ambient = ui.previewViewport.Ambient
+			card.viewport.LightColor = ui.previewViewport.LightColor
+			card.viewport.LightDirection = ui.previewViewport.LightDirection
+			card.viewport.BackgroundColor3 = preset.bottom
+			addVerticalGradient(card.viewport, preset.top, preset.bottom)
+			createStroke(card.viewport, preset.stroke)
+		end
+		updateSelectedPreviewCardCamera(card)
+	end
+end
+
+function createSelectedPreviewCard(session, slotIndex)
+	local frame = Instance.new("Frame")
+	frame.Size = UDim2.new(1, 0, 1, 0)
+	frame.BackgroundColor3 = Color3.fromRGB(22, 30, 42)
+	frame.BorderSizePixel = 0
+	frame.Parent = ui.previewSelectedFrame
+	createCorner(frame, 10)
+	createStroke(frame, slotIndex == previewState.activeSessionIndex and Color3.fromRGB(112, 196, 255) or Color3.fromRGB(78, 101, 135))
+	addVerticalGradient(frame, Color3.fromRGB(44, 58, 82), Color3.fromRGB(26, 35, 49))
+
+	local title = createLabel(session.label or ("Variant %d"):format(slotIndex), 11, Enum.Font.GothamBold, Color3.fromRGB(239, 244, 250), 20)
+	title.Size = UDim2.new(1, -12, 0, 20)
+	title.Position = UDim2.new(0, 6, 0, 6)
+	title.Parent = frame
+
+	local subtitle = createLabel(slotIndex == previewState.activeSessionIndex and "Focused selection" or "Selected preview", 10, Enum.Font.Gotham, Color3.fromRGB(187, 204, 226), 18)
+	subtitle.Size = UDim2.new(1, -12, 0, 18)
+	subtitle.Position = UDim2.new(0, 6, 0, 26)
+	subtitle.Parent = frame
+
+	local viewport = Instance.new("ViewportFrame")
+	viewport.Size = UDim2.new(1, -12, 1, -56)
+	viewport.Position = UDim2.new(0, 6, 0, 46)
+	viewport.BackgroundColor3 = ui.previewViewport.BackgroundColor3
+	viewport.BorderSizePixel = 0
+	viewport.Parent = frame
+	createCorner(viewport, 8)
+
+	local worldModel = Instance.new("WorldModel")
+	worldModel.Parent = viewport
+	local camera = Instance.new("Camera")
+	camera.Parent = viewport
+	viewport.CurrentCamera = camera
+
+	local clone = session.model:Clone()
+	clone.Name = "SelectedPreview"
+	clone.Parent = worldModel
+
+	previewState.selectedPreviewCards[#previewState.selectedPreviewCards + 1] = {
+		frame = frame,
+		model = clone,
+		viewport = viewport,
+		camera = camera,
+	}
+end
+
+function updateSelectedPreviewPanel()
+	clearSelectedPreviewPanel()
+	ui.previewViewport.Visible = true
+	ui.previewSelectedFrame.Visible = false
+end
+
+function createCompareViewportCard(session, slotIndex)
+	local frame = Instance.new("TextButton")
+	frame.Size = UDim2.new(1, 0, 1, 0)
+	frame.AutoButtonColor = false
+	frame.Text = ""
+	frame.BackgroundColor3 = Color3.fromRGB(25, 33, 46)
+	frame.BorderSizePixel = 0
+	frame.Parent = ui.previewCompareGrid
+	local isActive = slotIndex == previewState.activeSessionIndex
+	local isSelected = previewState.selectedSessionIndexes[slotIndex] == true
+	local strokeColor = Color3.fromRGB(98, 126, 161)
+	local topColor = Color3.fromRGB(48, 63, 86)
+	local bottomColor = Color3.fromRGB(29, 39, 53)
+	if isActive and isSelected then
+		strokeColor = Color3.fromRGB(104, 211, 149)
+		topColor = Color3.fromRGB(45, 92, 71)
+		bottomColor = Color3.fromRGB(26, 54, 42)
+	elseif isActive then
+		strokeColor = Color3.fromRGB(231, 124, 136)
+		topColor = Color3.fromRGB(103, 56, 65)
+		bottomColor = Color3.fromRGB(59, 31, 36)
+	elseif isSelected then
+		strokeColor = Color3.fromRGB(88, 186, 168)
+		topColor = Color3.fromRGB(37, 78, 72)
+		bottomColor = Color3.fromRGB(23, 49, 45)
+	end
+	createCorner(frame, 10)
+	createStroke(frame, strokeColor)
+	addVerticalGradient(frame, topColor, bottomColor)
+
+	local statusText = isActive and (isSelected and "Viewing + Selected" or "Viewing") or (isSelected and "Selected" or "Candidate")
+	local title = createLabel(statusText, 10, Enum.Font.GothamBold, Color3.fromRGB(235, 241, 249), 18)
+	title.Size = UDim2.new(1, -8, 0, 20)
+	title.Position = UDim2.new(0, 4, 0, 4)
+	title.Parent = frame
+
+	local subtitle = createLabel(session.label or ("Variant %d"):format(slotIndex), 10, Enum.Font.Gotham, Color3.fromRGB(192, 209, 229), 18)
+	subtitle.Size = UDim2.new(1, -8, 0, 18)
+	subtitle.Position = UDim2.new(0, 4, 0, 22)
+	subtitle.Parent = frame
+
+	local viewport = Instance.new("ViewportFrame")
+	viewport.Size = UDim2.new(1, -8, 1, -48)
+	viewport.Position = UDim2.new(0, 4, 0, 40)
+	viewport.BackgroundColor3 = Color3.fromRGB(18, 24, 34)
+	viewport.BorderSizePixel = 0
+	viewport.Parent = frame
+	createCorner(viewport, 8)
+	createStroke(viewport, Color3.fromRGB(79, 105, 141))
+	addVerticalGradient(viewport, Color3.fromRGB(69, 90, 126), Color3.fromRGB(38, 52, 76))
+	viewport.Ambient = ui.previewViewport.Ambient
+	viewport.LightColor = ui.previewViewport.LightColor
+	viewport.LightDirection = ui.previewViewport.LightDirection
+
+	local worldModel = Instance.new("WorldModel")
+	worldModel.Parent = viewport
+	local camera = Instance.new("Camera")
+	camera.Parent = viewport
+	viewport.CurrentCamera = camera
+
+	local clone = session.model:Clone()
+	clone.Name = "ComparePreview"
+	clone.Parent = worldModel
+
+	previewState.compareCards[#previewState.compareCards + 1] = {
+		frame = frame,
+		model = clone,
+		viewport = viewport,
+		camera = camera,
+	}
+	updateCompareCardCamera(previewState.compareCards[#previewState.compareCards])
+
+	frame.MouseButton1Click:Connect(function()
+		togglePreviewSessionSelection(slotIndex)
+	end)
+	frame.MouseButton2Click:Connect(function()
+		setActivePreviewSession(slotIndex)
+	end)
+end
+
+function updatePreviewComparePanel()
+	clearPreviewComparePanel()
+
+	if #previewState.sessions == 0 then
+		return
+	end
+
+	ui.previewCompareFrame.Visible = true
+	for index, session in ipairs(previewState.sessions) do
+		createCompareViewportCard(session, index)
+	end
+
+	ui.previewCompareHintLabel.Text = "All preview variants are visible here. Left-click to toggle selection. Right-click a variant to open it in the main preview."
+	syncPreviewGalleryCards()
+end
+
+function refreshPreviewTabs()
+	updatePreviewComparePanel()
+	updateSelectedPreviewPanel()
+end
+
+function scrollPreviewTargetIntoView(target)
+	if not target or not ui.previewRoot then
+		return
+	end
+	local relativeY = target.AbsolutePosition.Y - ui.previewRoot.AbsolutePosition.Y + ui.previewRoot.CanvasPosition.Y
+	local nextY = math.max(relativeY - 16, 0)
+	ui.previewRoot.CanvasPosition = Vector2.new(0, nextY)
+end
+
+function setActivePreviewSession(index)
+	local session = previewState.sessions[index]
+	if not session then
+		return
+	end
+
+	clearPreviewDisplay()
+	previewState.activeSessionIndex = index
+	previewState.activeModel = session.model
+	previewState.activeRequest = session.request
+	session.model.Name = "PreviewModel"
+	session.model.Parent = ui.previewWorldModel
+	captureCollisionData(session.model, session.colliderMode or session.request.colliderMode)
+	focusPreviewCamera(session.model)
+	updatePreviewStats()
+	ui.previewInfoLabel.Text = session.infoText or "Preview ready. Drag to orbit, use zoom, or enable auto-rotate."
+	refreshPreviewTabs()
+	syncPreviewActionButtons()
+	scrollPreviewTargetIntoView(ui.previewViewport)
+end
+
+function clearPreviewSessions()
+	clearPreviewDisplay()
+	for _, session in ipairs(previewState.sessions) do
+		if session.model and session.model.Parent == nil then
+			session.model:Destroy()
+		elseif session.model and session.model.Parent == ui.previewWorldModel then
+			session.model.Parent = nil
+			session.model:Destroy()
+		end
+	end
+	previewState.sessions = {}
+	previewState.activeSessionIndex = 0
+	previewState.selectedSessionIndexes = {}
+	refreshPreviewTabs()
+	syncPreviewActionButtons()
+end
+
+function replacePreviewSessions(sessions, activeIndex, statusMessage)
+	previewWidget.Enabled = true
+	clearPreviewSessions()
+	previewState.sessions = sessions or {}
+	previewState.activeSessionIndex = 0
+	previewState.selectedSessionIndexes = {}
+	refreshPreviewTabs()
+	if #previewState.sessions == 1 then
+		setActivePreviewSession(math.clamp(activeIndex or 1, 1, #previewState.sessions))
+	elseif #previewState.sessions > 1 then
+		clearPreviewDisplay()
+		ui.previewInfoLabel.Text = "Right-click a gallery variant to preview it here. Left-click variants to select the ones you want to generate."
+		updatePreviewStats()
+		syncPreviewActionButtons()
+	end
+	setPreviewBusy(false)
+	if statusMessage then
+		setStatus(statusMessage, "success")
+	end
+end
+
+function applyPreviewCamera()
+	local horizontal = math.cos(previewState.orbitPitch) * previewState.orbitRadius
+	local cameraOffset = Vector3.new(
+		math.cos(previewState.orbitYaw) * horizontal,
+		math.sin(previewState.orbitPitch) * previewState.orbitRadius,
+		math.sin(previewState.orbitYaw) * horizontal
+	)
+	ui.previewCamera.CFrame = CFrame.lookAt(previewState.orbitTarget + cameraOffset, previewState.orbitTarget)
+	syncPreviewGalleryCards()
+	syncSelectedPreviewCards()
 end
 
 function focusPreviewCamera(instance)
@@ -3891,18 +8287,18 @@ function focusPreviewCamera(instance)
 	end
 
 	local radius = math.max(size.X, size.Y, size.Z) * 0.9
-	previewOrbitTarget = cframe.Position
-	previewOrbitMinRadius = math.max(radius * 1.1, 5)
-	previewOrbitMaxRadius = math.max(radius * 6, previewOrbitMinRadius + 14)
-	previewOrbitRadius = math.clamp(math.max(radius * 2.2, 8), previewOrbitMinRadius, previewOrbitMaxRadius)
-	previewOrbitYaw = math.rad(45)
-	previewOrbitPitch = math.rad(20)
+	previewState.orbitTarget = cframe.Position
+	previewState.orbitMinRadius = math.max(radius * 1.1, 5)
+	previewState.orbitMaxRadius = math.max(radius * 6, previewState.orbitMinRadius + 14)
+	previewState.orbitRadius = math.clamp(math.max(radius * 2.2, 8), previewState.orbitMinRadius, previewState.orbitMaxRadius)
+	previewState.orbitYaw = math.rad(45)
+	previewState.orbitPitch = math.rad(20)
 	applyPreviewCamera()
 	updatePreviewDecorations()
 end
 
 function syncAutoRotateButton()
-	if previewAutoRotateEnabled then
+	if previewState.autoRotateEnabled then
 		ui.autoRotateButton.Text = "Auto Rotate: On"
 		setButtonThemeRole(ui.autoRotateButton, "active")
 	else
@@ -3912,45 +8308,45 @@ function syncAutoRotateButton()
 end
 
 function setPreviewAutoRotate(enabled)
-	previewAutoRotateEnabled = enabled and activePreviewModel ~= nil
+	previewState.autoRotateEnabled = enabled == true
 	syncAutoRotateButton()
 end
 
 function beginPreviewDrag(input)
-	if not activePreviewModel or previewBusy then
+	if not previewState.activeModel or previewState.busy then
 		return
 	end
-	previewDragging = true
-	previewDragInput = input
-	previewDragLastPosition = input.Position
+	previewState.dragging = true
+	previewState.dragInput = input
+	previewState.dragLastPosition = input.Position
 	setPreviewAutoRotate(false)
 end
 
 function endPreviewDrag(input)
-	if input and previewDragInput and input ~= previewDragInput then
+	if input and previewState.dragInput and input ~= previewState.dragInput then
 		return
 	end
-	previewDragging = false
-	previewDragInput = nil
-	previewDragLastPosition = nil
+	previewState.dragging = false
+	previewState.dragInput = nil
+	previewState.dragLastPosition = nil
 end
 
 function setPreviewCameraPreset(name)
-	if not activePreviewModel then
+	if not previewState.activeModel then
 		return
 	end
 	if name == "Front" then
-		previewOrbitYaw = math.rad(90)
-		previewOrbitPitch = 0
+		previewState.orbitYaw = math.rad(90)
+		previewState.orbitPitch = 0
 	elseif name == "Side" then
-		previewOrbitYaw = 0
-		previewOrbitPitch = 0
+		previewState.orbitYaw = 0
+		previewState.orbitPitch = 0
 	elseif name == "Top" then
-		previewOrbitYaw = math.rad(90)
-		previewOrbitPitch = math.rad(80)
+		previewState.orbitYaw = math.rad(90)
+		previewState.orbitPitch = math.rad(80)
 	else
-		previewOrbitYaw = math.rad(45)
-		previewOrbitPitch = math.rad(20)
+		previewState.orbitYaw = math.rad(45)
+		previewState.orbitPitch = math.rad(20)
 	end
 	applyPreviewCamera()
 end
@@ -3958,8 +8354,8 @@ end
 function cyclePreviewLightingPreset()
 	local order = {"Studio", "Neutral", "Dramatic", "Outdoor"}
 	for index, name in ipairs(order) do
-		if name == previewLightingPresetName then
-			previewLightingPresetName = order[(index % #order) + 1]
+		if name == previewState.lightingPresetName then
+			previewState.lightingPresetName = order[(index % #order) + 1]
 			break
 		end
 	end
@@ -3969,8 +8365,8 @@ end
 function cyclePreviewBackgroundPreset()
 	local order = {"Cool", "Charcoal", "Light", "Sand"}
 	for index, name in ipairs(order) do
-		if name == previewBackgroundPresetName then
-			previewBackgroundPresetName = order[(index % #order) + 1]
+		if name == previewState.backgroundPresetName then
+			previewState.backgroundPresetName = order[(index % #order) + 1]
 			break
 		end
 	end
@@ -3980,8 +8376,8 @@ end
 function cyclePreviewRotateSpeed()
 	local order = {"Slow", "Normal", "Fast"}
 	for index, name in ipairs(order) do
-		if name == previewRotateSpeedMode then
-			previewRotateSpeedMode = order[(index % #order) + 1]
+		if name == previewState.rotateSpeedMode then
+			previewState.rotateSpeedMode = order[(index % #order) + 1]
 			break
 		end
 	end
@@ -3989,7 +8385,7 @@ function cyclePreviewRotateSpeed()
 end
 
 function setPreviewBusy(nextBusy)
-	previewBusy = nextBusy
+	previewState.busy = nextBusy
 	ui.previewButton.AutoButtonColor = not nextBusy
 	ui.previewButton.Active = not nextBusy
 	ui.closePreviewButton.AutoButtonColor = not nextBusy
@@ -4010,41 +8406,42 @@ function setPreviewBusy(nextBusy)
 	ui.autoRotateButton.Active = not nextBusy
 	ui.resetViewButton.AutoButtonColor = not nextBusy
 	ui.resetViewButton.Active = not nextBusy
-	for _, button in ipairs(previewDisplayButtons) do
+	for _, button in ipairs(previewState.displayButtons) do
 		button.AutoButtonColor = not nextBusy
 		button.Active = not nextBusy
 	end
+	syncPreviewActionButtons()
 	if nextBusy then
 		ui.previewInfoLabel.Text = "Generating preview..."
 	else
-		if activePreviewModel then
-			ui.previewInfoLabel.Text = "Preview ready. Drag to orbit, use zoom, or enable auto-rotate."
+		if previewState.activeSessionIndex > 0 and previewState.sessions[previewState.activeSessionIndex] then
+			ui.previewInfoLabel.Text = previewState.sessions[previewState.activeSessionIndex].infoText or "Preview ready. Drag to orbit, use zoom, or enable auto-rotate."
 		end
 	end
 end
 
 function nudgePreviewCamera(yawDelta, pitchDelta)
-	if not activePreviewModel then
+	if not previewState.activeModel then
 		return
 	end
-	previewOrbitYaw += yawDelta
-	previewOrbitPitch = math.clamp(previewOrbitPitch + pitchDelta, math.rad(-80), math.rad(80))
+	previewState.orbitYaw += yawDelta
+	previewState.orbitPitch = math.clamp(previewState.orbitPitch + pitchDelta, math.rad(-80), math.rad(80))
 	applyPreviewCamera()
 end
 
 function zoomPreview(delta)
-	if not activePreviewModel then
+	if not previewState.activeModel then
 		return
 	end
-	previewOrbitRadius = math.clamp(previewOrbitRadius + delta, previewOrbitMinRadius, previewOrbitMaxRadius)
+	previewState.orbitRadius = math.clamp(previewState.orbitRadius + delta, previewState.orbitMinRadius, previewState.orbitMaxRadius)
 	applyPreviewCamera()
 end
 
 function resetPreviewCamera()
-	if not activePreviewModel then
+	if not previewState.activeModel then
 		return
 	end
-	focusPreviewCamera(activePreviewModel)
+	focusPreviewCamera(previewState.activeModel)
 end
 
 function clearCollisionHighlights()
@@ -4096,11 +8493,11 @@ end
 
 function refreshCollisionHighlights()
 	clearCollisionHighlights()
-	if not collisionPreviewEnabled or not activePreviewModel then
+	if not collisionPreviewEnabled or not previewState.activeModel then
 		return
 	end
 
-	local previewProxy = createCollisionProxies(activePreviewModel, true, lastRequestedColliderMode)
+	local previewProxy = createCollisionProxies(previewState.activeModel, true, lastRequestedColliderMode)
 	local index = 0
 	for _, descendant in ipairs(previewProxy:GetDescendants()) do
 		if descendant:IsA("BasePart") then
@@ -4181,44 +8578,49 @@ syncPreviewCollisionOpacityButton()
 updatePreviewStats()
 setCollisionPreviewEnabled(collisionPreviewEnabled)
 
-ui.previewViewport.InputBegan:Connect(function(input)
-	if input.UserInputType == Enum.UserInputType.MouseButton1 then
-		beginPreviewDrag(input)
-	end
-end)
+local function connectPreviewInputSurface(surface)
+	surface.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 then
+			beginPreviewDrag(input)
+		end
+	end)
 
-ui.previewViewport.InputEnded:Connect(function(input)
-	if input.UserInputType == Enum.UserInputType.MouseButton1 then
-		endPreviewDrag(input)
-	end
-end)
+	surface.InputEnded:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 then
+			endPreviewDrag(input)
+		end
+	end)
 
-ui.previewViewport.InputChanged:Connect(function(input)
-	if not activePreviewModel then
-		return
-	end
-	if input.UserInputType == Enum.UserInputType.MouseWheel then
-		zoomPreview(-input.Position.Z * math.max(previewOrbitRadius * 0.12, 1.25))
-	end
-end)
+	surface.InputChanged:Connect(function(input)
+		if not previewState.activeModel then
+			return
+		end
+		if input.UserInputType == Enum.UserInputType.MouseWheel then
+			zoomPreview(-input.Position.Z * math.max(previewState.orbitRadius * 0.12, 1.25))
+		end
+	end)
+end
+
+connectPreviewInputSurface(ui.previewViewport)
+connectPreviewInputSurface(ui.previewSelectedFrame)
 
 UserInputService.InputChanged:Connect(function(input)
-	if not previewDragging or not activePreviewModel then
+	if not previewState.dragging or not previewState.activeModel then
 		return
 	end
 	if input.UserInputType ~= Enum.UserInputType.MouseMovement then
 		return
 	end
 
-	if not previewDragLastPosition then
-		previewDragLastPosition = input.Position
+	if not previewState.dragLastPosition then
+		previewState.dragLastPosition = input.Position
 		return
 	end
 
-	local delta = input.Position - previewDragLastPosition
-	previewDragLastPosition = input.Position
-	previewOrbitYaw -= delta.X * 0.01
-	previewOrbitPitch = math.clamp(previewOrbitPitch - delta.Y * 0.008, math.rad(-80), math.rad(80))
+	local delta = input.Position - previewState.dragLastPosition
+	previewState.dragLastPosition = input.Position
+	previewState.orbitYaw -= delta.X * 0.01
+	previewState.orbitPitch = math.clamp(previewState.orbitPitch - delta.Y * 0.008, math.rad(-80), math.rad(80))
 	applyPreviewCamera()
 end)
 
@@ -4229,10 +8631,11 @@ UserInputService.InputEnded:Connect(function(input)
 end)
 
 RunService.Heartbeat:Connect(function(deltaTime)
-	if not previewAutoRotateEnabled or previewBusy or not activePreviewModel or not previewWidget.Enabled then
+	refreshGenerationActivityUi()
+	if not previewState.autoRotateEnabled or previewState.busy or not previewState.activeModel or not previewWidget.Enabled then
 		return
 	end
-	previewOrbitYaw += previewAutoRotateSpeed * deltaTime
+	previewState.orbitYaw += previewState.autoRotateSpeed * deltaTime
 	applyPreviewCamera()
 end)
 
@@ -4704,6 +9107,34 @@ function buildSeededPrompt(prompt, seed)
 	return ("%s\nvariation-seed:%s"):format(prompt, cleanedSeed), cleanedSeed
 end
 
+local MAX_GENERATION_PROMPT_LENGTH = 900
+
+function compactPromptText(text, maxLength)
+	local cleaned = tostring(text or ""):gsub("[%c\r\n]+", " "):gsub("%s+", " "):gsub("^%s+", ""):gsub("%s+$", "")
+	if maxLength and maxLength > 0 and #cleaned > maxLength then
+		cleaned = cleaned:sub(1, math.max(1, maxLength - 3)):gsub("%s+$", "") .. "..."
+	end
+	return cleaned
+end
+
+function buildCompactScenePrompt(sceneBrief, requiredElements, roleLabel, extraNotes)
+	local lines = {
+		"scene-build",
+		"scene:" .. compactPromptText(sceneBrief, 240),
+		"arrangement: compose the scene from separate placed assets that stay visually distinct; do not fuse everything into one object, one texture, or one continuous mass",
+	}
+	if requiredElements and requiredElements ~= "" then
+		lines[#lines + 1] = "needs:" .. compactPromptText(requiredElements, 220)
+	end
+	if roleLabel and roleLabel ~= "" then
+		lines[#lines + 1] = "focus:" .. compactPromptText(roleLabel, 80)
+	end
+	if extraNotes and extraNotes ~= "" then
+		lines[#lines + 1] = compactPromptText(extraNotes, 220)
+	end
+	return table.concat(lines, "\n")
+end
+
 function applyBasePreferenceToPrompt(prompt, includeBase)
 	if includeBase then
 		return prompt
@@ -4757,20 +9188,503 @@ function normalizeExperimentalPreviewMode(value)
 	return "Balanced"
 end
 
+function normalizeAudioVolumeMode(value)
+	local mode = tostring(value or "Medium")
+	if mode == "Off" or mode == "Low" or mode == "Medium" or mode == "High" then
+		return mode
+	end
+	return "Medium"
+end
+
+function getAudioVolumeMultiplier(enabled, level)
+	if enabled == false then
+		return 0
+	end
+	level = clampUnitNumber(level, 0.72)
+	if level <= 0.35 then
+		return (level / 0.35) * 0.45
+	elseif level <= 0.72 then
+		local alpha = (level - 0.35) / 0.37
+		return 0.45 + (0.55 * alpha)
+	end
+	local alpha = (level - 0.72) / 0.28
+	return 1 + (0.35 * alpha)
+end
+
+function getCompletionAudioVolumeMultiplier()
+	if not variationCompletionAudioEnabled then
+		return 0
+	end
+
+	local derivedLevel = math.max(
+		clampUnitNumber(uiAudioVolumeLevel, 0.72),
+		clampUnitNumber(themeChangeAudioVolumeLevel, 0.72) * 0.92,
+		0.62
+	)
+	return getAudioVolumeMultiplier(true, derivedLevel)
+end
+
 function buildExperimentalPrompt(prompt)
 	local finalPrompt = tostring(prompt or "")
 	local negativePrompt = ui.experimentalNegativePromptBox and tostring(ui.experimentalNegativePromptBox.Text or "") or ""
-	negativePrompt = negativePrompt:gsub("^%s+", ""):gsub("%s+$", "")
+	local scenePrompt = ui.scenePromptBox and tostring(ui.scenePromptBox.Text or "") or ""
+	local sceneModeActive = sceneModeLocksPromptModifiers()
+	negativePrompt = compactPromptText(negativePrompt, 180)
+	scenePrompt = compactPromptText(scenePrompt, 240)
+
+	if experimentalScenePromptEnabled and scenePrompt ~= "" then
+		local requiredElements = compactPromptText(finalPrompt, 220)
+		finalPrompt = buildCompactScenePrompt(scenePrompt, requiredElements, nil, "Place the separate assets naturally across the scene as if arranged deliberately in the world; do not merge them into one combined object.")
+	end
 
 	experimentalStyleBias = normalizeExperimentalStyleBias(experimentalStyleBias)
-	if experimentalStyleBias ~= "Off" then
+	if not sceneModeActive and experimentalStyleBias ~= "Off" then
 		finalPrompt = ("%s\nstyle-bias:%s"):format(finalPrompt, string.lower(experimentalStyleBias))
 	end
-	if negativePrompt ~= "" then
+	if not sceneModeActive and negativePrompt ~= "" then
 		finalPrompt = ("%s\navoid:%s"):format(finalPrompt, negativePrompt)
 	end
 
-	return finalPrompt, negativePrompt
+	return finalPrompt, negativePrompt, scenePrompt
+end
+
+function splitSceneAssetHints(mainPrompt, scenePrompt)
+	local hints = {}
+	local seen = {}
+	local combined = ("%s\n%s"):format(tostring(mainPrompt or ""), tostring(scenePrompt or ""))
+	combined = combined:gsub("[%c\r\n]+", "\n")
+
+	local function pushHint(text)
+		local cleaned = compactPromptText(text, 72)
+		cleaned = cleaned:gsub("^and%s+", ""):gsub("^with%s+", ""):gsub("^a%s+", ""):gsub("^an%s+", "")
+		if cleaned == "" or #cleaned < 3 then
+			return
+		end
+		local key = string.lower(cleaned)
+		if seen[key] then
+			return
+		end
+		seen[key] = true
+		hints[#hints + 1] = cleaned
+	end
+
+	for rawPart in combined:gmatch("[^\n,;]+") do
+		local part = compactPromptText(rawPart, 80)
+		local lowered = string.lower(part)
+		local splitPatterns = {
+			" surrounded by ",
+			" next to ",
+			" beside ",
+			" near ",
+			" overlooking ",
+			" leading to ",
+			" path to ",
+			" bridge to ",
+			" featuring ",
+			" with ",
+			" and ",
+		}
+		local splitApplied = false
+		for _, pattern in ipairs(splitPatterns) do
+			if string.find(lowered, pattern, 1, true) then
+				local startIndex = 1
+				while true do
+					local foundStart, foundEnd = string.find(lowered, pattern, startIndex, true)
+					if not foundStart then
+						pushHint(string.sub(part, startIndex))
+						break
+					end
+					pushHint(string.sub(part, startIndex, foundStart - 1))
+					startIndex = foundEnd + 1
+				end
+				splitApplied = true
+				break
+			end
+		end
+		if not splitApplied then
+			pushHint(part)
+		end
+	end
+
+	return hints
+end
+
+function getScenePlanningHash(text)
+	local hash = 2166136261
+	for index = 1, #text do
+		hash = bit32.bxor(hash, string.byte(text, index))
+		hash = (hash * 16777619) % 2147483647
+	end
+	return hash
+end
+
+function getSceneRoleSizeMultiplier(role)
+	if role == "landmark" then
+		return 0.92
+	end
+	if role == "terrain" or role == "shoreline" then
+		return 0.82
+	end
+	if role == "support" then
+		return 0.68
+	end
+	if role == "connector" then
+		return 0.56
+	end
+	return 0.42
+end
+
+function inferSceneAssetRole(label, scenePrompt)
+	local lowered = string.lower(("%s %s"):format(tostring(label or ""), tostring(scenePrompt or "")))
+	if string.find(lowered, "shore", 1, true) or string.find(lowered, "coast", 1, true) or string.find(lowered, "water edge", 1, true) or string.find(lowered, "dock", 1, true) then
+		return "shoreline", "edge"
+	end
+	if string.find(lowered, "path", 1, true) or string.find(lowered, "bridge", 1, true) or string.find(lowered, "road", 1, true) or string.find(lowered, "stairs", 1, true) or string.find(lowered, "gate", 1, true) then
+		return "connector", "mid"
+	end
+	if string.find(lowered, "ground", 1, true) or string.find(lowered, "floor", 1, true) or string.find(lowered, "terrain", 1, true) or string.find(lowered, "cliff", 1, true) or string.find(lowered, "courtyard", 1, true) or string.find(lowered, "sand", 1, true) then
+		return "terrain", "base"
+	end
+	if string.find(lowered, "keep", 1, true) or string.find(lowered, "castle", 1, true) or string.find(lowered, "tower", 1, true) or string.find(lowered, "house", 1, true) or string.find(lowered, "temple", 1, true) or string.find(lowered, "landmark", 1, true) then
+		return "landmark", "center"
+	end
+	if string.find(lowered, "tree", 1, true) or string.find(lowered, "boat", 1, true) or string.find(lowered, "wall", 1, true) or string.find(lowered, "pillar", 1, true) or string.find(lowered, "building", 1, true) or string.find(lowered, "furniture", 1, true) then
+		return "support", "mid"
+	end
+	return "scatter", "outer"
+end
+
+function addScenePlanEntry(plan, planIndex, label, count, purpose, role, band)
+	local cleanedLabel = compactPromptText(label, 64)
+	if cleanedLabel == "" then
+		return
+	end
+	local key = string.lower(cleanedLabel)
+	local existingIndex = planIndex[key]
+	if existingIndex then
+		plan[existingIndex].count += math.max(1, math.floor(tonumber(count) or 1))
+		return
+	end
+	local resolvedRole, resolvedBand = inferSceneAssetRole(cleanedLabel, "")
+	planIndex[key] = #plan + 1
+	plan[#plan + 1] = {
+		label = cleanedLabel,
+		count = math.max(1, math.floor(tonumber(count) or 1)),
+		purpose = purpose or "scene asset",
+		role = role or resolvedRole,
+		band = band or resolvedBand,
+		sizeMultiplier = getSceneRoleSizeMultiplier(role or resolvedRole),
+	}
+end
+
+function addAtomicSceneEntries(plan, planIndex, specs)
+	for _, spec in ipairs(specs or {}) do
+		addScenePlanEntry(
+			plan,
+			planIndex,
+			spec.label,
+			spec.count or 1,
+			spec.purpose or "scene asset",
+			spec.role,
+			spec.band
+		)
+	end
+end
+
+function expandSceneLabelToAtomicAssets(label, scenePrompt)
+	local cleanedLabel = compactPromptText(label, 64)
+	local lowered = string.lower(("%s %s"):format(cleanedLabel, tostring(scenePrompt or "")))
+
+	local function entries(...)
+		return {...}
+	end
+
+	if string.find(lowered, "western town", 1, true) or string.find(lowered, "western", 1, true) then
+		return entries(
+			{label = "false front facade", count = 1, purpose = "storefront frontage", role = "landmark", band = "center"},
+			{label = "timber wall section", count = 2, purpose = "building wall module", role = "support", band = "mid"},
+			{label = "porch section", count = 1, purpose = "front porch module", role = "connector", band = "mid"},
+			{label = "roof segment", count = 2, purpose = "roof module", role = "support", band = "mid"},
+			{label = "boardwalk segment", count = 1, purpose = "street edge module", role = "connector", band = "mid"},
+			{label = "fence section", count = 2, purpose = "perimeter module", role = "scatter", band = "outer"},
+			{label = "barrel or crate prop", count = 2, purpose = "street prop", role = "scatter", band = "outer"}
+		)
+	end
+	if string.find(lowered, "house", 1, true) or string.find(lowered, "building", 1, true) or string.find(lowered, "facade", 1, true) then
+		return entries(
+			{label = "wall section", count = 2, purpose = "structural wall module", role = "support", band = "mid"},
+			{label = "corner post", count = 2, purpose = "structural support module", role = "support", band = "mid"},
+			{label = "roof segment", count = 2, purpose = "roof module", role = "support", band = "mid"},
+			{label = "door frame", count = 1, purpose = "entry module", role = "connector", band = "mid"},
+			{label = "window frame", count = 2, purpose = "opening module", role = "scatter", band = "outer"}
+		)
+	end
+	if string.find(lowered, "castle", 1, true) or string.find(lowered, "fortress", 1, true) or string.find(lowered, "keep", 1, true) then
+		return entries(
+			{label = "stone wall segment", count = 2, purpose = "fortified wall module", role = "support", band = "mid"},
+			{label = "tower module", count = 1, purpose = "vertical defense module", role = "landmark", band = "center"},
+			{label = "gate section", count = 1, purpose = "entry defense module", role = "connector", band = "mid"},
+			{label = "roof cap", count = 1, purpose = "roof module", role = "support", band = "mid"},
+			{label = "stone stair", count = 1, purpose = "circulation module", role = "connector", band = "mid"}
+		)
+	end
+	if string.find(lowered, "dock", 1, true) or string.find(lowered, "harbor", 1, true) or string.find(lowered, "port", 1, true) then
+		return entries(
+			{label = "dock deck section", count = 2, purpose = "dock platform module", role = "shoreline", band = "edge"},
+			{label = "dock support post", count = 2, purpose = "dock structural module", role = "support", band = "edge"},
+			{label = "boat hull", count = 1, purpose = "harbor vessel", role = "support", band = "mid"},
+			{label = "crate stack", count = 2, purpose = "cargo prop", role = "scatter", band = "outer"},
+			{label = "rope or bollard prop", count = 1, purpose = "dock detail", role = "scatter", band = "outer"}
+		)
+	end
+	if string.find(lowered, "fence", 1, true) then
+		return entries(
+			{label = "fence section", count = 1, purpose = "repeatable fence module", role = "scatter", band = "outer"},
+			{label = "fence post", count = 1, purpose = "fence support module", role = "scatter", band = "outer"}
+		)
+	end
+	if string.find(lowered, "roof", 1, true) then
+		return entries(
+			{label = "roof segment", count = 1, purpose = "repeatable roof module", role = "support", band = "mid"},
+			{label = "roof trim", count = 1, purpose = "roof edge module", role = "scatter", band = "outer"}
+		)
+	end
+	if string.find(lowered, "wall", 1, true) then
+		return entries(
+			{label = "wall section", count = 1, purpose = "repeatable wall module", role = "support", band = "mid"},
+			{label = "corner support", count = 1, purpose = "wall support module", role = "support", band = "mid"}
+		)
+	end
+	if string.find(lowered, "road", 1, true) or string.find(lowered, "street", 1, true) or string.find(lowered, "path", 1, true) or string.find(lowered, "boardwalk", 1, true) then
+		return entries(
+			{label = cleanedLabel, count = 1, purpose = "ground route module", role = "connector", band = "mid"}
+		)
+	end
+	if string.find(lowered, "ground", 1, true) or string.find(lowered, "terrain", 1, true) or string.find(lowered, "shoreline", 1, true) or string.find(lowered, "sand", 1, true) then
+		return entries(
+			{label = cleanedLabel, count = 1, purpose = "ground terrain module", role = "terrain", band = "base"}
+		)
+	end
+	return entries(
+		{label = cleanedLabel, count = 1, purpose = "single modular scene asset", role = select(1, inferSceneAssetRole(cleanedLabel, scenePrompt)), band = select(2, inferSceneAssetRole(cleanedLabel, scenePrompt))}
+	)
+end
+
+function inferSceneAssetPlan(mainPrompt, scenePrompt)
+	local mainText = compactPromptText(mainPrompt, 220)
+	local sceneText = compactPromptText(scenePrompt, 240)
+	local combined = string.lower(("%s %s"):format(mainText, sceneText))
+	local hash = getScenePlanningHash(combined)
+	local plan = {}
+	local planIndex = {}
+
+	local function has(...)
+		for _, token in ipairs({...}) do
+			if string.find(combined, token, 1, true) then
+				return true
+			end
+		end
+		return false
+	end
+
+	local function add(label, count, purpose, role, band)
+		addScenePlanEntry(plan, planIndex, label, count, purpose, role, band)
+	end
+	local function addExpanded(label)
+		addAtomicSceneEntries(plan, planIndex, expandSceneLabelToAtomicAssets(label, scenePrompt))
+	end
+
+	if has("castle", "fortress", "keep", "medieval") then
+		addExpanded("castle keep")
+		addExpanded("outer walls")
+		add("courtyard ground", 1, "ground base", "terrain", "base")
+		add("stone path", 1, "approach route", "connector", "mid")
+	end
+	if has("harbor", "dock", "port") then
+		addExpanded("dock platforms")
+		addExpanded("small boats")
+		addExpanded("crate stacks")
+	end
+	if has("beach", "shore", "coast", "coastal") then
+		add("shoreline terrain", 1, "edge terrain", "shoreline", "edge")
+		add("sand ground", 1, "terrain base", "terrain", "base")
+		add("coastal rocks", 2 + (hash % 2), "shore breakup", "scatter", "outer")
+	end
+	if has("forest", "woods", "grove", "jungle") then
+		addExpanded("tree cluster")
+		add("forest ground", 1, "terrain base", "terrain", "base")
+		add("rocks and shrubs", 2, "ground breakup", "scatter", "outer")
+	end
+	if has("village", "town", "settlement") then
+		addExpanded(mainText ~= "" and mainText or "town")
+		add("main street", 1, "circulation route", "connector", "mid")
+		add("market props", 2, "street detail", "scatter", "outer")
+	end
+	if has("ruin", "ruins", "temple") then
+		addExpanded("ruined structure")
+		add("broken pillars", 2, "architectural support", "support", "mid")
+		add("masonry debris", 2, "scatter detail", "scatter", "outer")
+	end
+	if has("interior", "room", "hall") then
+		add("room shell", 1, "interior envelope", "terrain", "base")
+		add("major furniture", 2, "functional assets", "support", "mid")
+		add("small decor", 2, "secondary props", "scatter", "outer")
+	end
+	if has("street", "city", "urban") then
+		add("building frontage", 2, "urban walls", "support", "mid")
+		add("street surface", 1, "ground plane", "terrain", "base")
+		add("street clutter", 2, "secondary props", "scatter", "outer")
+	end
+
+	for _, hint in ipairs(splitSceneAssetHints(mainPrompt, scenePrompt)) do
+		if #plan >= 8 then
+			break
+		end
+		addAtomicSceneEntries(plan, planIndex, expandSceneLabelToAtomicAssets(hint, scenePrompt))
+	end
+
+	local hasLandmark = false
+	local hasTerrain = false
+	for _, item in ipairs(plan) do
+		hasLandmark = hasLandmark or item.role == "landmark"
+		hasTerrain = hasTerrain or item.role == "terrain" or item.role == "shoreline"
+	end
+	if not hasTerrain then
+		add("scene ground", 1, "base terrain", "terrain", "base")
+	end
+	if not hasLandmark and #plan > 0 then
+		add(mainText ~= "" and mainText or "main scene feature", 1, "main focal asset", "landmark", "center")
+	end
+	if #plan == 0 then
+		add("scene ground", 1, "base terrain", "terrain", "base")
+		add("main scene feature", 1, "focal element", "landmark", "center")
+		add("supporting props", 2, "support detail", "scatter", "outer")
+	end
+
+	return plan
+end
+
+function getSceneRolePromptSpec(role, label, sceneBrief)
+	local architectureAvoid = "avoid: full merged diorama, fused scene block, duplicate hero landmark, single combined object"
+	if role == "landmark" then
+		return {
+			note = "Create one major placeable landmark asset only. It should stand on its own as a single object placed into the scene.",
+			avoid = "avoid: full scene, surrounding terrain, duplicate landmarks, merged environment block",
+		}
+	end
+	if role == "terrain" or role == "shoreline" then
+		return {
+			note = "Create one placeable terrain-style asset only, such as ground, shoreline, cliff, floor, or waterfront mass.",
+			avoid = "avoid: full scene, buildings plus props all fused together, duplicate landmarks",
+		}
+	end
+	if role == "connector" then
+		return {
+			note = "Create one placeable connector asset only, such as a path, bridge, stair, road, or gateway approach.",
+			avoid = architectureAvoid,
+		}
+	end
+	if role == "support" then
+		return {
+			note = "Create one medium-size supporting placeable asset that complements the scene without becoming the whole environment.",
+			avoid = architectureAvoid,
+		}
+	end
+	return {
+		note = "Create one small-to-medium placeable prop or breakup asset only.",
+		avoid = architectureAvoid,
+	}
+end
+
+function buildSceneAssetPrompt(sceneBrief, requiredElements, assetHint, roleSpec, entry)
+	local target = compactPromptText(assetHint, 64)
+	local theme = compactPromptText(sceneBrief, 90)
+	local context = compactPromptText(requiredElements, 90)
+	local prompt = target
+	if theme ~= "" then
+		prompt = ("%s, %s style"):format(prompt, theme)
+	end
+	if context ~= "" then
+		prompt = ("%s, matching %s"):format(prompt, context)
+	end
+	prompt = ("%s, modular reusable game asset, single object only, no full scene, no full building, isolated clean shape"):format(prompt)
+	return prompt
+end
+
+function buildSceneAssetRequests(baseRequest)
+	local requiredElements = compactPromptText(baseRequest.prompt, 180)
+	local sceneBrief = compactPromptText(baseRequest.scenePrompt, 220)
+	local assetPlan = inferSceneAssetPlan(baseRequest.prompt, sceneBrief)
+	local maxRequests = 12
+	local totalWeight = 0
+	for _, item in ipairs(assetPlan) do
+		totalWeight += (item.sizeMultiplier or 0.5) * math.max(1, item.count or 1)
+	end
+	totalWeight = math.max(totalWeight, 1)
+
+	local sceneTargetSize = math.max(16, tonumber(baseRequest.targetSize) or 24)
+	local triangleBudget = tonumber((baseRequest.inputs and baseRequest.inputs.MaxTriangles) or baseRequest.maxTriangles) or 0
+	local requests = {}
+	local assetIndex = 0
+
+	for _, entry in ipairs(assetPlan) do
+		for itemIndex = 1, math.max(1, entry.count or 1) do
+			if #requests >= maxRequests then
+				break
+			end
+			assetIndex += 1
+			local assetHint = (entry.count or 1) > 1 and ("%s %d"):format(entry.label, itemIndex) or entry.label
+			local roleSpec = getSceneRolePromptSpec(entry.role, assetHint, sceneBrief)
+			local assetTargetSize = math.max(8, math.floor(sceneTargetSize * (entry.sizeMultiplier or 0.5)))
+			local weightedTriangles = math.floor(triangleBudget * ((entry.sizeMultiplier or 0.5) / totalWeight) * math.max(1, #assetPlan))
+			local assetTriangles = math.max(400, math.min(baseRequest.maxTriangles, weightedTriangles))
+			local assetPrompt = buildSceneAssetPrompt(sceneBrief, requiredElements, assetHint, roleSpec, entry)
+			local effectivePrompt, normalizedSeed = buildSeededPrompt(assetPrompt, ("%s-scene-%d"):format(tostring(baseRequest.seed or ""), assetIndex))
+			requests[#requests + 1] = {
+				prompt = assetHint,
+				targetSize = assetTargetSize,
+				maxTriangles = assetTriangles,
+				textures = baseRequest.textures,
+				includeBase = false,
+				anchored = baseRequest.anchored,
+				schemaName = baseRequest.schemaName,
+				seed = normalizedSeed,
+				baseSeed = normalizedSeed,
+				variationCount = 1,
+				variationIndex = assetIndex,
+				negativePrompt = baseRequest.negativePrompt,
+				scenePrompt = sceneBrief,
+				scenePromptEnabled = false,
+				styleBias = baseRequest.styleBias,
+				previewMode = baseRequest.previewMode,
+				groundSnap = true,
+				promptBeforeSeed = assetPrompt,
+				effectivePrompt = effectivePrompt,
+				colliderMode = baseRequest.colliderMode,
+				inputs = {
+					TextPrompt = effectivePrompt,
+					Size = Vector3.new(assetTargetSize, assetTargetSize, assetTargetSize),
+					MaxTriangles = assetTriangles,
+					GenerateTextures = baseRequest.textures,
+				},
+				schema = {
+					PredefinedSchema = baseRequest.schemaName,
+				},
+				sceneAssetIndex = assetIndex,
+				sceneAssetCount = math.min(maxRequests, #assetPlan),
+				sceneAssetHint = assetHint,
+				sceneAssetRole = entry.role,
+				sceneAssetBand = entry.band,
+				sceneAssetSizeMultiplier = entry.sizeMultiplier or 0.5,
+				sceneAssetSequence = itemIndex,
+			}
+		end
+		if #requests >= maxRequests then
+			break
+		end
+	end
+
+	return requests
 end
 
 function getExperimentalPreviewTriangleBudget(maxTriangles)
@@ -4803,7 +9717,7 @@ function applyGroundSnapAtOrigin(instance)
 	end
 end
 
-function saveInputs(prompt, targetSize, maxTriangles, textures, includeBase, anchored, schemaName, colliderMode, seed)
+function saveInputs(prompt, targetSize, maxTriangles, textures, includeBase, anchored, schemaName, colliderMode, seed, variationCount)
 	setSetting(SETTINGS.prompt, prompt)
 	setSetting(SETTINGS.size, targetSize)
 	setSetting(SETTINGS.maxTriangles, maxTriangles)
@@ -4813,6 +9727,10 @@ function saveInputs(prompt, targetSize, maxTriangles, textures, includeBase, anc
 	setSetting(SETTINGS.schema, schemaName)
 	setSetting(SETTINGS.colliderMode, colliderMode)
 	setSetting(SETTINGS.seed, seed)
+	setSetting(SETTINGS.variationCount, variationCount)
+	if ui.scenePromptBox then
+		setSetting(SETTINGS.experimentalScenePrompt, tostring(ui.scenePromptBox.Text or ""))
+	end
 end
 
 function attachGeneratedCollisionModel(parentTarget, generatedModel, request)
@@ -4847,7 +9765,7 @@ end
 function buildRequest()
 	refreshCollisionHeuristicsFromInputs()
 
-	local prompt = ui.promptBox.Text
+	local prompt = experimentalScenePromptEnabled and "" or ui.promptBox.Text
 	local targetSize = parseNumber(ui.sizeBox.Text, 24, 4, 512)
 	local maxTriangles = parseNumber(ui.trianglesBox.Text, 20000, 500, 100000)
 	local textures = generationTexturesEnabled
@@ -4855,9 +9773,10 @@ function buildRequest()
 	local anchored = generationAnchoredEnabled
 	local schemaName = ui.schemaBox.Text ~= "" and ui.schemaBox.Text or "Body1"
 	local seed = ui.seedBox.Text or ""
+	local variationCount = parseNumber(ui.variationCountBox.Text, 1, 1, 12)
 	local colliderMode = normalizeColliderMode(ui.colliderModeBox.Text)
 	local baseAdjustedPrompt = applyBasePreferenceToPrompt(prompt, includeBase)
-	local experimentalPrompt, negativePrompt = buildExperimentalPrompt(baseAdjustedPrompt)
+	local experimentalPrompt, negativePrompt, scenePrompt = buildExperimentalPrompt(baseAdjustedPrompt)
 	local seededPrompt, normalizedSeed = buildSeededPrompt(experimentalPrompt, seed)
 
 	local inputs = {
@@ -4880,10 +9799,16 @@ function buildRequest()
 		anchored = anchored,
 		schemaName = schemaName,
 		seed = normalizedSeed,
+		baseSeed = normalizedSeed,
+		variationCount = variationCount,
 		negativePrompt = negativePrompt,
+		scenePrompt = scenePrompt,
+		scenePromptEnabled = experimentalScenePromptEnabled,
 		styleBias = experimentalStyleBias,
 		previewMode = experimentalPreviewMode,
+		sceneLayoutMode = "generate",
 		groundSnap = experimentalGroundSnap,
+		promptBeforeSeed = experimentalPrompt,
 		effectivePrompt = seededPrompt,
 		colliderMode = colliderMode,
 		inputs = inputs,
@@ -4891,48 +9816,527 @@ function buildRequest()
 	}
 end
 
+function getVariationSeed(baseSeed, variationIndex)
+	local cleanedSeed = tostring(baseSeed or ""):gsub("^%s+", ""):gsub("%s+$", "")
+	if cleanedSeed == "" then
+		return generateRandomSeed()
+	end
+	if variationIndex <= 1 then
+		return cleanedSeed
+	end
+
+	local numericSeed = tonumber(cleanedSeed)
+	if numericSeed and numericSeed == math.floor(numericSeed) then
+		return tostring(numericSeed + variationIndex - 1)
+	end
+
+	return ("%s-%d"):format(cleanedSeed, variationIndex)
+end
+
+function buildVariationRequests(baseRequest)
+	local variationCount = math.max(1, math.floor(tonumber(baseRequest.variationCount) or 1))
+	local requests = {}
+
+	for variationIndex = 1, variationCount do
+		local variationSeed = getVariationSeed(baseRequest.baseSeed, variationIndex)
+		local effectivePrompt, normalizedSeed = buildSeededPrompt(baseRequest.promptBeforeSeed, variationSeed)
+		requests[#requests + 1] = {
+			prompt = baseRequest.prompt,
+			targetSize = baseRequest.targetSize,
+			maxTriangles = baseRequest.maxTriangles,
+			textures = baseRequest.textures,
+			includeBase = baseRequest.includeBase,
+			anchored = baseRequest.anchored,
+			schemaName = baseRequest.schemaName,
+			seed = normalizedSeed,
+			baseSeed = baseRequest.baseSeed,
+			variationCount = variationCount,
+			variationIndex = variationIndex,
+			negativePrompt = baseRequest.negativePrompt,
+			scenePrompt = baseRequest.scenePrompt,
+			scenePromptEnabled = baseRequest.scenePromptEnabled,
+			styleBias = baseRequest.styleBias,
+			previewMode = baseRequest.previewMode,
+			sceneLayoutMode = baseRequest.sceneLayoutMode,
+			groundSnap = baseRequest.groundSnap,
+			promptBeforeSeed = baseRequest.promptBeforeSeed,
+			effectivePrompt = effectivePrompt,
+			colliderMode = baseRequest.colliderMode,
+			inputs = {
+				TextPrompt = effectivePrompt,
+				Size = baseRequest.inputs.Size,
+				MaxTriangles = baseRequest.inputs.MaxTriangles,
+				GenerateTextures = baseRequest.inputs.GenerateTextures,
+			},
+			schema = {
+				PredefinedSchema = baseRequest.schema.PredefinedSchema,
+			},
+		}
+	end
+
+	return requests
+end
+
+function buildRequestInputsAndSchema(request)
+	local promptBeforeSeed = request.promptBeforeSeed
+	if not promptBeforeSeed or promptBeforeSeed == "" then
+		local requiredElements = applyBasePreferenceToPrompt(request.prompt, request.includeBase)
+		local cleanedScenePrompt = compactPromptText(request.scenePrompt, 240)
+		if request.scenePromptEnabled and cleanedScenePrompt ~= "" then
+			promptBeforeSeed = buildCompactScenePrompt(
+				cleanedScenePrompt,
+				compactPromptText(requiredElements, 220),
+				nil,
+				"Place the separate assets naturally across the scene as if arranged deliberately in the world; do not merge them into one combined object."
+			)
+		else
+			promptBeforeSeed = requiredElements
+		end
+	end
+
+	local effectivePrompt, normalizedSeed = buildSeededPrompt(promptBeforeSeed, request.seed)
+	request.seed = normalizedSeed
+	request.baseSeed = request.baseSeed or normalizedSeed
+	request.promptBeforeSeed = promptBeforeSeed
+	request.effectivePrompt = effectivePrompt
+	request.variationCount = math.max(1, math.floor(tonumber(request.variationCount) or 1))
+	request.inputs = {
+		TextPrompt = effectivePrompt,
+		Size = Vector3.new(request.targetSize, request.targetSize, request.targetSize),
+		MaxTriangles = request.maxTriangles,
+		GenerateTextures = request.textures,
+	}
+	request.schema = {
+		PredefinedSchema = request.schemaName,
+	}
+	return request
+end
+
+function getVariationModelName(prompt, seed, variationIndex, variationCount)
+	local baseName = getPromptName(prompt)
+	local pattern = tostring(generationNamePattern or "Prompt")
+	local parts = {baseName}
+	local cleanedSeed = tostring(seed or ""):gsub("^%s+", ""):gsub("%s+$", "")
+	local hasMultiple = variationCount and variationCount > 1
+
+	if pattern == "Prompt + Seed" or pattern == "Prompt + Seed + Index" then
+		parts[#parts + 1] = cleanedSeed ~= "" and ("S%s"):format(cleanedSeed) or "Random"
+	end
+	if pattern == "Prompt + Index" or pattern == "Prompt + Seed + Index" or hasMultiple then
+		parts[#parts + 1] = ("V%02d"):format(variationIndex or 1)
+	end
+
+	local name = table.concat(parts, "_")
+	if #name > 72 then
+		name = name:sub(1, 72)
+	end
+	return name
+end
+
+function getInstanceBounds(instance)
+	if instance:IsA("Model") then
+		return instance:GetBoundingBox()
+	elseif instance:IsA("BasePart") then
+		return instance.CFrame, instance.Size
+	end
+	return CFrame.new(), Vector3.new(4, 4, 4)
+end
+
+function translateInstance(instance, translation)
+	if instance:IsA("Model") then
+		instance:PivotTo(instance:GetPivot() + translation)
+	elseif instance:IsA("BasePart") then
+		instance.CFrame += translation
+	end
+end
+
+function layoutGeneratedBatch(folder)
+	if not folder or generationBatchLayout == "Folder Only" then
+		return
+	end
+
+	local generated = {}
+	for _, child in ipairs(folder:GetChildren()) do
+		if child:IsA("Model") or child:IsA("BasePart") then
+			generated[#generated + 1] = child
+		end
+	end
+	if #generated <= 1 then
+		return
+	end
+
+	table.sort(generated, function(left, right)
+		return left.Name < right.Name
+	end)
+
+	local spacing = 6
+	if generationBatchLayout == "Row" then
+		local cursorX = 0
+		for _, child in ipairs(generated) do
+			local boundsCFrame, boundsSize = getInstanceBounds(child)
+			local halfWidth = boundsSize.X * 0.5
+			local targetX = cursorX + halfWidth
+			local targetY = math.max(boundsSize.Y * 0.5, 0)
+			local translation = Vector3.new(targetX, targetY, 0) - boundsCFrame.Position
+			translateInstance(child, translation)
+			cursorX = targetX + halfWidth + spacing
+		end
+		return
+	end
+
+	local columns = math.max(2, math.ceil(math.sqrt(#generated)))
+	local cellWidth = 0
+	local cellDepth = 0
+	for _, child in ipairs(generated) do
+		local _, boundsSize = getInstanceBounds(child)
+		cellWidth = math.max(cellWidth, boundsSize.X)
+		cellDepth = math.max(cellDepth, boundsSize.Z)
+	end
+	cellWidth += spacing
+	cellDepth += spacing
+
+	for index, child in ipairs(generated) do
+		local row = math.floor((index - 1) / columns)
+		local column = (index - 1) % columns
+		local boundsCFrame, boundsSize = getInstanceBounds(child)
+		local target = Vector3.new(
+			column * cellWidth,
+			math.max(boundsSize.Y * 0.5, 0),
+			row * cellDepth
+		)
+		translateInstance(child, target - boundsCFrame.Position)
+	end
+end
+
+function layoutSceneComposite(container)
+	if not container then
+		return
+	end
+
+	local assets = {}
+	for _, child in ipairs(container:GetChildren()) do
+		if child:IsA("Model") or child:IsA("BasePart") then
+			assets[#assets + 1] = child
+		end
+	end
+	if #assets <= 1 then
+		return
+	end
+
+	table.sort(assets, function(left, right)
+		local leftIndex = tonumber(left:GetAttribute("DetailedModelSceneAssetIndex") or 0) or 0
+		local rightIndex = tonumber(right:GetAttribute("DetailedModelSceneAssetIndex") or 0) or 0
+		if leftIndex == rightIndex then
+			return left.Name < right.Name
+		end
+		return leftIndex < rightIndex
+	end)
+
+	local desiredSceneSpan = math.max(18, tonumber(container:GetAttribute("DetailedModelTargetSize")) or 24)
+	local sceneLayoutMode = tostring(container:GetAttribute("DetailedModelSceneLayoutMode") or "generate")
+	local maxWidth = 0
+	local maxDepth = 0
+	local bands = {
+		base = {},
+		center = {},
+		mid = {},
+		edge = {},
+		outer = {},
+	}
+
+	for _, asset in ipairs(assets) do
+		local band = tostring(asset:GetAttribute("DetailedModelSceneAssetBand") or "mid")
+		if not bands[band] then
+			band = "mid"
+		end
+		bands[band][#bands[band] + 1] = asset
+		local _, boundsSize = getInstanceBounds(asset)
+		maxWidth = math.max(maxWidth, boundsSize.X)
+		maxDepth = math.max(maxDepth, boundsSize.Z)
+	end
+
+	local spreadScale = sceneLayoutMode == "preview" and 1 or 0.58
+	local horizontalUnit = math.max(desiredSceneSpan * 0.3 * spreadScale, maxWidth * (sceneLayoutMode == "preview" and 1.1 or 0.7), 5)
+	local depthUnit = math.max(desiredSceneSpan * 0.24 * spreadScale, maxDepth * (sceneLayoutMode == "preview" and 1.05 or 0.68), 4)
+
+	local function placeBand(list, baseDepth, widthScale, alternateSides)
+		for index, asset in ipairs(list) do
+			local boundsCFrame, boundsSize = getInstanceBounds(asset)
+			local side = alternateSides and ((index % 2 == 0) and 1 or -1) or 0
+			local lane = alternateSides and math.floor((index - 1) / 2) or (index - 1)
+			local x
+			if alternateSides then
+				x = side * horizontalUnit * (0.65 + lane * widthScale)
+			else
+				local centeredIndex = index - ((#list + 1) / 2)
+				x = centeredIndex * horizontalUnit * widthScale
+			end
+			local z = baseDepth + lane * depthUnit * 0.7
+			local target = Vector3.new(x, math.max(boundsSize.Y * 0.5, 0), z)
+			translateInstance(asset, target - boundsCFrame.Position)
+		end
+	end
+
+	placeBand(bands.base, depthUnit * 1.6, 0.95, false)
+	placeBand(bands.center, 0, 1.15, false)
+	placeBand(bands.mid, depthUnit * 0.85, 1.1, false)
+	placeBand(bands.edge, depthUnit * 2.2, 1.2, false)
+	placeBand(bands.outer, depthUnit * 1.1, 0.9, true)
+end
+
+function stripScenePreviewCollisionContainers(instance)
+	if not instance then
+		return
+	end
+	for _, descendant in ipairs(instance:GetDescendants()) do
+		if descendant:IsA("Folder") and string.find(descendant.Name, "_Collision", 1, true) then
+			descendant:Destroy()
+		end
+	end
+end
+
+function finalizeSceneComposite(sceneContainer, parentTarget, request)
+	sceneContainer.Name = getVariationModelName(
+		tostring(request.scenePrompt or request.prompt or "Scene"),
+		request.seed,
+		request.variationIndex or 1,
+		request.variationCount or 1
+	)
+	sceneContainer.Parent = parentTarget
+	sceneContainer:SetAttribute("DetailedModelPrompt", request.prompt)
+	sceneContainer:SetAttribute("DetailedModelTargetSize", request.targetSize)
+	sceneContainer:SetAttribute("DetailedModelMaxTriangles", request.maxTriangles)
+	sceneContainer:SetAttribute("DetailedModelGenerateTextures", request.textures)
+	sceneContainer:SetAttribute("DetailedModelIncludeBase", request.includeBase)
+	sceneContainer:SetAttribute("DetailedModelAnchored", request.anchored)
+	sceneContainer:SetAttribute("DetailedModelSchema", request.schemaName)
+	sceneContainer:SetAttribute("DetailedModelSeed", request.seed)
+	sceneContainer:SetAttribute("DetailedModelColliderMode", request.colliderMode)
+	sceneContainer:SetAttribute("DetailedModelScenePrompt", tostring(request.scenePrompt or ""))
+	sceneContainer:SetAttribute("DetailedModelScenePromptEnabled", true)
+	sceneContainer:SetAttribute("DetailedModelSceneLayoutMode", tostring(request.sceneLayoutMode or "generate"))
+	sceneContainer:SetAttribute("DetailedModelVariationIndex", request.variationIndex or 1)
+	sceneContainer:SetAttribute("DetailedModelVariationCount", request.variationCount or 1)
+	layoutSceneComposite(sceneContainer)
+	if request.groundSnap then
+		pcall(function()
+			applyGroundSnapAtOrigin(sceneContainer)
+		end)
+	end
+end
+
+function findVariationBatchFolder(instances)
+	local folder
+	for _, instance in ipairs(instances) do
+		local candidate = instance and instance.Parent
+		if not candidate or not candidate:IsA("Folder") or not string.find(candidate.Name, "_Variations", 1, true) then
+			return nil
+		end
+		if folder and folder ~= candidate then
+			return nil
+		end
+		folder = candidate
+	end
+	return folder
+end
+
+function finalizeGeneratedModel(generatedModel, parentTarget, request)
+	generatedModel.Name = getVariationModelName(request.prompt, request.seed, request.variationIndex or 1, request.variationCount or 1)
+	generatedModel.Parent = parentTarget
+	generatedModel:SetAttribute("DetailedModelPrompt", request.prompt)
+	generatedModel:SetAttribute("DetailedModelTargetSize", request.targetSize)
+	generatedModel:SetAttribute("DetailedModelMaxTriangles", request.maxTriangles)
+	generatedModel:SetAttribute("DetailedModelGenerateTextures", request.textures)
+	generatedModel:SetAttribute("DetailedModelIncludeBase", request.includeBase)
+	generatedModel:SetAttribute("DetailedModelAnchored", request.anchored)
+	generatedModel:SetAttribute("DetailedModelSchema", request.schemaName)
+	generatedModel:SetAttribute("DetailedModelSeed", request.seed)
+	generatedModel:SetAttribute("DetailedModelColliderMode", request.colliderMode)
+	generatedModel:SetAttribute("DetailedModelScenePrompt", tostring(request.scenePrompt or ""))
+	generatedModel:SetAttribute("DetailedModelScenePromptEnabled", request.scenePromptEnabled == true)
+	generatedModel:SetAttribute("DetailedModelScale", getInstanceScale(generatedModel))
+	generatedModel:SetAttribute("DetailedModelVariationIndex", request.variationIndex or 1)
+	generatedModel:SetAttribute("DetailedModelVariationCount", request.variationCount or 1)
+	applyAnchoredState(generatedModel, request.anchored)
+	clearGeneratedTextureReferences(generatedModel)
+	storeCachedVisualModel(request, generatedModel)
+	captureCollisionData(generatedModel, request.colliderMode)
+	attachGeneratedCollisionModel(parentTarget, generatedModel, request)
+
+	if generatedModel:IsA("Model") then
+		pcall(function()
+			if request.groundSnap then
+				applyGroundSnapAtOrigin(generatedModel)
+			else
+				generatedModel:PivotTo(CFrame.new())
+			end
+		end)
+	elseif request.groundSnap and generatedModel:IsA("BasePart") then
+		pcall(function()
+			applyGroundSnapAtOrigin(generatedModel)
+		end)
+	end
+end
+
+function generateSingleDetailedModel(request, parentTarget)
+	if request.scenePromptEnabled and tostring(request.scenePrompt or ""):gsub("%s+", "") ~= "" then
+		local sceneContainer = Instance.new("Model")
+		local assetRequests = buildSceneAssetRequests(request)
+		local generatedAny = false
+		local usedCache = true
+		local failedAssetCount = 0
+		local firstFailureMessage = nil
+
+		for _, assetRequest in ipairs(assetRequests) do
+			local generatedModel = loadCachedVisualModel(assetRequest)
+			local success = true
+			if not generatedModel then
+				usedCache = false
+				success, generatedModel = pcall(function()
+					return GenerationService:GenerateModelAsync(assetRequest.inputs, assetRequest.schema)
+				end)
+			end
+			if not success then
+				failedAssetCount += 1
+				if not firstFailureMessage then
+					firstFailureMessage = ("%s -> %s"):format(tostring(assetRequest.sceneAssetHint or assetRequest.prompt or "scene asset"), tostring(generatedModel))
+				end
+				continue
+			end
+			if typeof(generatedModel) ~= "Instance" then
+				failedAssetCount += 1
+				if not firstFailureMessage then
+					firstFailureMessage = ("%s -> Scene generation returned no model instance."):format(tostring(assetRequest.sceneAssetHint or assetRequest.prompt or "scene asset"))
+				end
+				continue
+			end
+
+			finalizeGeneratedModel(generatedModel, sceneContainer, assetRequest)
+			generatedModel:SetAttribute("DetailedModelSceneAssetIndex", assetRequest.sceneAssetIndex or 1)
+			generatedModel:SetAttribute("DetailedModelSceneAssetCount", assetRequest.sceneAssetCount or #assetRequests)
+			generatedModel:SetAttribute("DetailedModelSceneAssetHint", tostring(assetRequest.sceneAssetHint or ""))
+			generatedModel:SetAttribute("DetailedModelSceneAssetRole", tostring(assetRequest.sceneAssetRole or "scatter"))
+			generatedModel:SetAttribute("DetailedModelSceneAssetBand", tostring(assetRequest.sceneAssetBand or "mid"))
+			generatedModel:SetAttribute("DetailedModelSceneAssetSizeMultiplier", tonumber(assetRequest.sceneAssetSizeMultiplier) or 0.5)
+			generatedModel:SetAttribute("DetailedModelSceneAssetSequence", tonumber(assetRequest.sceneAssetSequence) or 1)
+			generatedAny = true
+		end
+
+		if not generatedAny then
+			sceneContainer:Destroy()
+			return false, firstFailureMessage or "Scene generation produced no assets."
+		end
+
+		finalizeSceneComposite(sceneContainer, parentTarget, request)
+		return true, {
+			model = sceneContainer,
+			usedCache = usedCache,
+			partCount = #assetRequests,
+			failedAssetCount = failedAssetCount,
+			requestedAssetCount = #assetRequests,
+			errorMessage = firstFailureMessage,
+		}
+	end
+
+	local generatedModel = loadCachedVisualModel(request)
+	local success = true
+	local metadataOrError
+	local usedCache = generatedModel ~= nil
+
+	if not generatedModel then
+		success, generatedModel, metadataOrError = pcall(function()
+			return GenerationService:GenerateModelAsync(request.inputs, request.schema)
+		end)
+	end
+
+	if not success then
+		return false, tostring(generatedModel)
+	end
+	if typeof(generatedModel) ~= "Instance" then
+		return false, "Generation returned no model instance. Response: " .. tostring(generatedModel)
+	end
+
+	finalizeGeneratedModel(generatedModel, parentTarget, request)
+
+	return true, {
+		model = generatedModel,
+		usedCache = usedCache,
+		partCount = countParts(generatedModel),
+		metadataOrError = metadataOrError,
+	}
+end
+
 function renderRequestPreview(request)
+	local lines = {
+		"Preview",
+	}
+	local cleanedPrompt = tostring(request.prompt or ""):gsub("^%s+", ""):gsub("%s+$", "")
+	if cleanedPrompt ~= "" then
+		lines[#lines + 1] = "Prompt: " .. cleanedPrompt
+	elseif request.scenePromptEnabled and tostring(request.scenePrompt or ""):gsub("%s+", "") ~= "" then
+		lines[#lines + 1] = "Prompt: scene-driven"
+	end
+	if request.scenePromptEnabled and tostring(request.scenePrompt or ""):gsub("%s+", "") ~= "" then
+		lines[#lines + 1] = "Scene: " .. tostring(request.scenePrompt)
+		local plannedAssets = 0
+		for _, item in ipairs(inferSceneAssetPlan(request.prompt, request.scenePrompt)) do
+			plannedAssets += item.count
+		end
+		lines[#lines + 1] = "Scene Assets Planned: " .. tostring(plannedAssets)
+	end
+	lines[#lines + 1] = "Size: " .. tostring(request.targetSize)
+	lines[#lines + 1] = "MaxTriangles: " .. tostring(request.maxTriangles)
+	lines[#lines + 1] = "GenerateTextures: " .. tostring(request.textures)
+	lines[#lines + 1] = "IncludeBase: " .. tostring(request.includeBase)
+	lines[#lines + 1] = "Anchored: " .. tostring(request.anchored)
+	lines[#lines + 1] = "Schema: " .. request.schemaName
+	lines[#lines + 1] = "Seed: " .. (request.seed ~= "" and request.seed or "random")
+	lines[#lines + 1] = "Variations: " .. tostring(request.variationCount or 1)
+	lines[#lines + 1] = "ColliderMode: " .. request.colliderMode
 	setStatus(
-		table.concat({
-			"Preview",
-			"Prompt: " .. request.prompt,
-			"Size: " .. tostring(request.targetSize),
-			"MaxTriangles: " .. tostring(request.maxTriangles),
-			"GenerateTextures: " .. tostring(request.textures),
-			"IncludeBase: " .. tostring(request.includeBase),
-			"Anchored: " .. tostring(request.anchored),
-			"Schema: " .. request.schemaName,
-			"Seed: " .. (request.seed ~= "" and request.seed or "random"),
-			"ColliderMode: " .. request.colliderMode,
-		}, "\n"),
+		table.concat(lines, "\n"),
 		"info"
 	)
 end
 
 function validateRequest(request)
-	if string.gsub(request.prompt, "%s+", "") == "" then
+	local cleanedPrompt = tostring(request.prompt or ""):gsub("%s+", "")
+	local cleanedScenePrompt = tostring(request.scenePrompt or ""):gsub("%s+", "")
+	if cleanedPrompt == "" and not (request.scenePromptEnabled and cleanedScenePrompt ~= "") then
 		return false, "Enter a prompt before generating."
+	end
+	local promptText = tostring((request.inputs and request.inputs.TextPrompt) or request.effectivePrompt or request.promptBeforeSeed or "")
+	if #promptText > MAX_GENERATION_PROMPT_LENGTH then
+		return false, ("Prompt is too long for Roblox generation (%d characters). Shorten the scene direction or the requested elements."):format(#promptText)
 	end
 	return true
 end
 
 function loadModelIntoPreview(model, colliderMode, statusMessage, request)
-	previewWidget.Enabled = true
-	clearPreviewModel()
-	activePreviewModel = model
-	activePreviewRequest = request
-	model.Name = "PreviewModel"
-	model.Parent = ui.previewWorldModel
-	captureCollisionData(model, colliderMode)
-	focusPreviewCamera(model)
-	updatePreviewStats()
-	setPreviewBusy(false)
-	setStatus(statusMessage, "success")
+	replacePreviewSessions({
+		{
+			model = model,
+			request = request,
+			colliderMode = colliderMode,
+			label = request and getVariationModelName(request.prompt, request.seed, request.variationIndex or 1, request.variationCount or 1) or "Preview",
+			infoText = request and request.scenePromptEnabled and tostring(request.scenePrompt or ""):gsub("%s+", "") ~= ""
+				and "Scene-directed preview ready. Drag to orbit, use zoom, or enable auto-rotate."
+				or "Preview ready. Drag to orbit, use zoom, or enable auto-rotate.",
+			generateText = "Generate This Variant",
+		},
+	}, 1, statusMessage)
 end
 
 function generateVisualPreview()
-	if busy or previewBusy then
+	if busy or previewState.busy then
 		return
+	end
+
+	local variationCount = parseNumber(ui.variationCountBox.Text, 1, 1, 12)
+	if variationCount > 1 then
+		local randomSeed = generateRandomSeed()
+		ui.seedBox.Text = randomSeed
+		setSetting(SETTINGS.seed, randomSeed)
 	end
 
 	local request = buildRequest()
@@ -4944,31 +10348,131 @@ function generateVisualPreview()
 
 	previewWidget.Enabled = true
 	setPreviewBusy(true)
-	request.inputs.MaxTriangles = getExperimentalPreviewTriangleBudget(request.maxTriangles)
+	local variationRequests = buildVariationRequests(request)
+	local previewSessionsToLoad = {}
+	local cacheHits = 0
+	local failureCount = 0
+	beginGenerationActivity(
+		"Preview",
+		#variationRequests,
+		#variationRequests > 1 and ("Preparing %d preview variations"):format(#variationRequests) or "Preparing preview request",
+		"Preview timing is estimated from completed variations."
+	)
 
-	local cachedPreviewModel = loadCachedVisualModel(request)
-	if cachedPreviewModel then
-		pushPromptHistory(request.prompt)
-		refreshPromptHistoryButtons()
-		loadModelIntoPreview(cachedPreviewModel, request.colliderMode, "Opened a cached visual preview in the preview window.", request)
-		return
+	for index, variationRequest in ipairs(variationRequests) do
+		ui.previewInfoLabel.Text = #variationRequests > 1
+			and ("Generating preview %d/%d..."):format(index, #variationRequests)
+			or "Generating preview..."
+		updateGenerationActivity(
+			index,
+			index - 1,
+			#variationRequests > 1 and ("Preview variant %d (%s)"):format(index, variationRequest.seed ~= "" and variationRequest.seed or "random") or "Generating preview",
+			"Preview requests use a lighter triangle budget for faster feedback.",
+			cacheHits
+		)
+
+		variationRequest.inputs.MaxTriangles = getExperimentalPreviewTriangleBudget(variationRequest.maxTriangles)
+		local sceneModeActive = variationRequest.scenePromptEnabled and tostring(variationRequest.scenePrompt or ""):gsub("%s+", "") ~= ""
+		local cachedPreviewModel = nil
+		local generatedModel = nil
+		local sceneResult = nil
+
+		if sceneModeActive then
+			variationRequest.sceneLayoutMode = "preview"
+			local previewBuildFolder = Instance.new("Folder")
+			local success, generatedSuccess, resultOrError = pcall(function()
+				return generateSingleDetailedModel(variationRequest, previewBuildFolder)
+			end)
+			sceneResult = success and generatedSuccess and resultOrError or nil
+			if not generatedSuccess or not sceneResult or not sceneResult.model then
+				local failureDetail = not success and tostring(generatedSuccess)
+					or tostring(resultOrError or "Unknown scene preview failure.")
+				previewBuildFolder:Destroy()
+				failureCount += 1
+				updateGenerationActivity(
+					index,
+					index,
+					"Preview failed for this variation",
+					("Continuing with the remaining preview requests. %s"):format(failureDetail),
+					cacheHits
+				)
+				continue
+			end
+			generatedModel = sceneResult.model
+			if sceneResult.usedCache then
+				cacheHits += 1
+				cachedPreviewModel = generatedModel
+			end
+			stripScenePreviewCollisionContainers(generatedModel)
+			generatedModel.Parent = nil
+			previewBuildFolder:Destroy()
+		else
+			cachedPreviewModel = loadCachedVisualModel(variationRequest)
+			generatedModel = cachedPreviewModel
+
+			if cachedPreviewModel then
+				cacheHits += 1
+			else
+				local success, generatedOrError = pcall(function()
+					return GenerationService:GenerateModelAsync(variationRequest.inputs, variationRequest.schema)
+				end)
+				if not success or typeof(generatedOrError) ~= "Instance" then
+					failureCount += 1
+					updateGenerationActivity(index, index, "Preview failed for this variation", "Continuing with the remaining preview requests.", cacheHits)
+					continue
+				end
+				generatedModel = generatedOrError
+				storeCachedVisualModel(variationRequest, generatedModel)
+			end
+		end
+		updateGenerationActivity(
+			index,
+			index,
+			#variationRequests > 1 and ("Preview ready for variant %d"):format(index) or "Preview ready",
+			sceneResult and sceneResult.failedAssetCount and sceneResult.failedAssetCount > 0
+				and ("Built the scene with %d/%d asset failures."):format(sceneResult.failedAssetCount, sceneResult.requestedAssetCount or sceneResult.failedAssetCount)
+				or (cachedPreviewModel and "Loaded from cache." or "Fresh preview returned from Roblox."),
+			cacheHits
+		)
+		playGenerationCompletionSound("variation_complete")
+
+		previewSessionsToLoad[#previewSessionsToLoad + 1] = {
+			model = generatedModel,
+			request = variationRequest,
+			colliderMode = variationRequest.colliderMode,
+			label = #variationRequests > 1
+				and ("Variant %d (%s)"):format(index, variationRequest.seed ~= "" and variationRequest.seed or "random")
+				or "Preview",
+			infoText = #variationRequests > 1
+				and ((variationRequest.scenePromptEnabled and tostring(variationRequest.scenePrompt or ""):gsub("%s+", "") ~= "")
+					and ("Scene preview variant %d of %d. Use the gallery cards to compare candidates."):format(index, #variationRequests)
+					or ("Previewing variant %d of %d. Use the gallery cards to compare candidates."):format(index, #variationRequests))
+				or ((variationRequest.scenePromptEnabled and tostring(variationRequest.scenePrompt or ""):gsub("%s+", "") ~= "")
+					and "Scene-directed preview ready. Drag to orbit, use zoom, or enable auto-rotate."
+					or "Preview ready. Drag to orbit, use zoom, or enable auto-rotate."),
+			generateText = "Generate This Variant",
+		}
 	end
 
-	local success, generatedModel = pcall(function()
-		return GenerationService:GenerateModelAsync(request.inputs, request.schema)
-	end)
-
-	if not success or typeof(generatedModel) ~= "Instance" then
+	if #previewSessionsToLoad == 0 then
+		endGenerationActivity()
 		setPreviewBusy(false)
-		ui.previewInfoLabel.Text = "Preview failed: " .. tostring(generatedModel)
-		setStatus("Preview generation failed: " .. tostring(generatedModel), "error")
+		ui.previewInfoLabel.Text = "Preview failed for all requested variations."
+		setStatus("Preview generation failed for all requested variations.", "error")
 		return
 	end
 
-	storeCachedVisualModel(request, generatedModel)
 	pushPromptHistory(request.prompt)
 	refreshPromptHistoryButtons()
-	loadModelIntoPreview(generatedModel, request.colliderMode, "Opened a visual preview in the preview window.", request)
+	replacePreviewSessions(
+		previewSessionsToLoad,
+		1,
+		#previewSessionsToLoad > 1
+			and ("Opened %d preview variants. Cache hits: %d. Failed: %d."):format(#previewSessionsToLoad, cacheHits, failureCount)
+			or (cacheHits > 0 and "Opened a cached visual preview in the preview window." or "Opened a visual preview in the preview window.")
+	)
+	playGenerationCompletionSound("batch_complete")
+	endGenerationActivity()
 end
 
 function buildRuntimeManagerSource()
@@ -5602,7 +11106,11 @@ function buildRequestFromAttributes(instance)
 		schemaName = instance:GetAttribute("DetailedModelSchema") or "Body1",
 		seed = tostring(instance:GetAttribute("DetailedModelSeed") or ""),
 		colliderMode = normalizeColliderMode(instance:GetAttribute("DetailedModelColliderMode") or "ai"),
+		variationCount = instance:GetAttribute("DetailedModelVariationCount") or 1,
+		scenePrompt = tostring(instance:GetAttribute("DetailedModelScenePrompt") or ""),
+		scenePromptEnabled = instance:GetAttribute("DetailedModelScenePromptEnabled") == true,
 		modelScale = getInstanceScale(instance),
+		groundSnap = experimentalGroundSnap,
 	}
 
 	if request.textures == nil then
@@ -5615,7 +11123,301 @@ function buildRequestFromAttributes(instance)
 		request.anchored = true
 	end
 
-	return request
+	return buildRequestInputsAndSchema(request)
+end
+
+function loadRequestIntoInputs(request)
+	if not request then
+		return
+	end
+	ui.promptBox.Text = tostring(request.prompt or "")
+	ui.sizeBox.Text = tostring(request.targetSize or 24)
+	ui.trianglesBox.Text = tostring(request.maxTriangles or 20000)
+	ui.schemaBox.Text = tostring(request.schemaName or "Body1")
+	ui.seedBox.Text = tostring(request.seed or "")
+	ui.variationCountBox.Text = tostring(request.variationCount or 1)
+	ui.colliderModeBox.Text = tostring(request.colliderMode or "ai")
+	if ui.scenePromptBox then
+		ui.scenePromptBox.Text = tostring(request.scenePrompt or "")
+	end
+	generationTexturesEnabled = request.textures ~= false
+	generationIncludeBaseEnabled = request.includeBase ~= false
+	generationAnchoredEnabled = request.anchored ~= false
+	syncGenerationBooleanButtons()
+	renderRequestPreview(buildRequest())
+end
+
+function cycleNamePattern()
+	local order = {"Prompt", "Prompt + Seed", "Prompt + Index", "Prompt + Seed + Index"}
+	for index, name in ipairs(order) do
+		if name == generationNamePattern then
+			generationNamePattern = order[(index % #order) + 1]
+			setSetting(SETTINGS.namePattern, generationNamePattern)
+			return
+		end
+	end
+	generationNamePattern = order[1]
+	setSetting(SETTINGS.namePattern, generationNamePattern)
+end
+
+function cycleBatchLayout()
+	local order = {"Folder Only", "Row", "Grid"}
+	for index, name in ipairs(order) do
+		if name == generationBatchLayout then
+			generationBatchLayout = order[(index % #order) + 1]
+			setSetting(SETTINGS.batchLayout, generationBatchLayout)
+			return
+		end
+	end
+	generationBatchLayout = order[1]
+	setSetting(SETTINGS.batchLayout, generationBatchLayout)
+end
+
+function refreshPromptLibraryButtons()
+	if ui.favoritePromptButton then
+		local currentPrompt = tostring(ui.promptBox and ui.promptBox.Text or ""):gsub("^%s+", ""):gsub("%s+$", "")
+		local isFavorite = currentPrompt ~= "" and isFavoritePrompt(currentPrompt)
+		ui.favoritePromptButton.Text = isFavorite and "Prompt Already Favorited" or "Favorite Current Prompt"
+		setButtonThemeRole(ui.favoritePromptButton, isFavorite and "active" or "teal")
+		ui.unfavoritePromptButton.Active = isFavorite
+		ui.unfavoritePromptButton.AutoButtonColor = isFavorite
+		setButtonThemeRole(ui.unfavoritePromptButton, isFavorite and "warning" or "muted")
+	end
+
+	for index, button in ipairs(ui.favoritePromptButtons or {}) do
+		local prompt = favoritePrompts[index]
+		if prompt then
+			button.Text = ("Load Favorite %d: %s"):format(index, getPromptName(prompt))
+			button.Active = true
+			button.AutoButtonColor = true
+			setButtonThemeRole(button, "secondary")
+		else
+			button.Text = ("Favorite %d: Empty"):format(index)
+			button.Active = false
+			button.AutoButtonColor = false
+			setButtonThemeRole(button, "muted")
+		end
+	end
+
+	for index, button in ipairs(ui.recentPromptButtons or {}) do
+		local prompt = recentPromptHistory[index]
+		if prompt then
+			button.Text = ("Load Recent %d: %s"):format(index, getPromptName(prompt))
+			button.Active = true
+			button.AutoButtonColor = true
+			setButtonThemeRole(button, "info")
+		else
+			button.Text = ("Recent %d: Empty"):format(index)
+			button.Active = false
+			button.AutoButtonColor = false
+			setButtonThemeRole(button, "muted")
+		end
+	end
+
+	if ui.namePatternButton then
+		ui.namePatternButton.Text = "Name Pattern: " .. generationNamePattern
+		setButtonThemeRole(ui.namePatternButton, generationNamePattern == "Prompt" and "accent" or "active")
+	end
+	if ui.batchLayoutButton then
+		ui.batchLayoutButton.Text = "Batch Layout: " .. generationBatchLayout
+		setButtonThemeRole(ui.batchLayoutButton, generationBatchLayout == "Folder Only" and "secondary" or "active")
+	end
+end
+
+function keepSelectedVariationBatch()
+	local selection = Selection:Get()
+	if #selection == 0 then
+		setStatus("Select one or more generated variations first.", "error")
+		return
+	end
+
+	local folder = findVariationBatchFolder(selection)
+	if not folder then
+		setStatus("Selected items must come from the same *_Variations folder.", "error")
+		return
+	end
+
+	local selectedLookup = {}
+	for _, instance in ipairs(selection) do
+		selectedLookup[instance] = true
+	end
+
+	local removed = 0
+	ChangeHistoryService:SetWaypoint("Before Keep Selected Variants")
+	for _, child in ipairs(folder:GetChildren()) do
+		if (child:IsA("Model") or child:IsA("BasePart")) and not selectedLookup[child] then
+			child:Destroy()
+			removed += 1
+		end
+	end
+	ChangeHistoryService:SetWaypoint("After Keep Selected Variants")
+	updateToggleStorageButton()
+	setStatus(("Kept %d selected variation(s) and removed %d sibling candidate(s)."):format(#selection, removed), "success")
+end
+
+function regenerateSelectedModel()
+	local selected = getSingleSelection()
+	if not selected or not isGeneratedDetailedModel(selected) then
+		setStatus("Select exactly one generated model before using Regenerate Selected.", "error")
+		return
+	end
+
+	local request = buildRequestFromAttributes(selected)
+	if not request then
+		setStatus("The selected model is missing saved generation metadata.", "error")
+		return
+	end
+
+	local selectedParent = selected.Parent or workspace
+	local replaceTarget = selected
+	loadRequestIntoInputs(request)
+	executeDetailedGeneration(request, selectedParent, true, replaceTarget)
+end
+
+function buildSingleGenerationRequestFromPreview(request)
+	local copy = {}
+	for key, value in pairs(request or {}) do
+		if key ~= "inputs" and key ~= "schema" then
+			copy[key] = value
+		end
+	end
+	copy.variationCount = 1
+	copy.variationIndex = 1
+	copy.baseSeed = copy.seed
+	copy.sceneLayoutMode = "generate"
+	return buildRequestInputsAndSchema(copy)
+end
+
+function generateActivePreviewVariant()
+	if not previewState.activeRequest then
+		setStatus("Open a preview variant before generating it.", "error")
+		return
+	end
+	if busy or previewState.busy then
+		return
+	end
+
+	local request = buildSingleGenerationRequestFromPreview(previewState.activeRequest)
+	loadRequestIntoInputs(request)
+	executeDetailedGeneration(request, getInsertionParent(), true)
+end
+
+function executePreviewGenerationRequests(requests, successMessage)
+	if not requests or #requests == 0 then
+		setStatus("Select preview variants before generating them.", "error")
+		return
+	end
+	if busy or previewState.busy then
+		return
+	end
+
+	local parentTarget = getInsertionParent()
+	ChangeHistoryService:SetWaypoint("Before Preview Variant Generate")
+	setBusyState(true)
+	beginGenerationActivity(
+		"Generate",
+		#requests,
+		#requests > 1 and ("Preparing %d preview variants for generation"):format(#requests) or "Preparing selected preview variant",
+		"ETA updates after each completed variant."
+	)
+
+	local generatedModels = {}
+	local outputTarget = parentTarget
+	local batchFolder
+
+	if #requests > 1 then
+		local batchPrompt = requests[1].prompt or "PreviewBatch"
+		batchFolder = Instance.new("Folder")
+		batchFolder.Name = getPromptName(batchPrompt) .. "_Variations"
+		batchFolder.Parent = parentTarget
+		outputTarget = batchFolder
+	end
+
+	for index, request in ipairs(requests) do
+		ui.generateButton.Text = #requests > 1
+			and ("Generating %d/%d..."):format(index, #requests)
+			or "Generating..."
+		updateGenerationActivity(
+			index,
+			index - 1,
+			#requests > 1 and ("Generating variant %d (%s)"):format(index, request.seed ~= "" and request.seed or "random") or "Generating selected preview variant",
+			"Submitting the request to Roblox and waiting for the model to return."
+		)
+
+		local success, result = generateSingleDetailedModel(request, outputTarget)
+		if not success then
+			if batchFolder and #generatedModels == 0 then
+				batchFolder:Destroy()
+			end
+			endGenerationActivity()
+			setBusyState(false)
+			setStatus("Preview generation failed: " .. tostring(result), "error")
+			return
+		end
+		generatedModels[#generatedModels + 1] = result.model
+		updateGenerationActivity(index, index, #requests > 1 and ("Finished variant %d"):format(index) or "Generated selected preview variant", result.usedCache and "Loaded from cache." or "Fresh model generated.")
+	end
+
+	if batchFolder then
+		layoutGeneratedBatch(batchFolder)
+	end
+
+	if requests[1] and requests[1].prompt then
+		pushPromptHistory(requests[1].prompt)
+		refreshPromptHistoryButtons()
+	end
+	refreshPromptLibraryButtons()
+	Selection:Set(generatedModels)
+	ChangeHistoryService:SetWaypoint("After Preview Variant Generate")
+	endGenerationActivity()
+	setBusyState(false)
+	setStatus(successMessage or ("Generated %d preview variant(s)."):format(#generatedModels), "success")
+end
+
+function generateSelectedPreviewVariants()
+	local requests = getSelectedPreviewRequests()
+	if #requests == 0 then
+		setStatus("Left-click preview gallery cards to choose the variants you want to generate.", "error")
+		return
+	end
+	for _, request in ipairs(requests) do
+		loadRequestIntoInputs(request)
+		break
+	end
+	executePreviewGenerationRequests(requests, ("Generated %d selected preview variant(s)."):format(#requests))
+end
+
+function generateAllPreviewVariants()
+	local requests = {}
+	for _, session in ipairs(previewState.sessions) do
+		if session and session.request then
+			requests[#requests + 1] = buildSingleGenerationRequestFromPreview(session.request)
+		end
+	end
+	if #requests == 0 then
+		setStatus("Open preview variants before generating all of them.", "error")
+		return
+	end
+	loadRequestIntoInputs(requests[1])
+	executePreviewGenerationRequests(requests, ("Generated all %d preview variant(s)."):format(#requests))
+end
+
+function toggleSelectAllPreviewTabs()
+	if #previewState.sessions == 0 then
+		setStatus("Open preview variants before selecting them.", "error")
+		return
+	end
+
+	local selectedCount = getSelectedPreviewSessionCount()
+	local allSelected = selectedCount == #previewState.sessions
+	previewState.selectedSessionIndexes = {}
+	if not allSelected then
+		for index = 1, #previewState.sessions do
+			previewState.selectedSessionIndexes[index] = true
+		end
+	end
+	refreshPreviewTabs()
+	syncPreviewActionButtons()
 end
 
 function applyPreset(targetSize, maxTriangles, collisionPresetName)
@@ -5625,6 +11427,150 @@ function applyPreset(targetSize, maxTriangles, collisionPresetName)
 		applyCollisionHeuristicPreset(collisionPresetName)
 	end
 	renderRequestPreview(buildRequest())
+end
+
+function executeDetailedGeneration(request, parentTarget, skipInputRefresh, replaceTarget)
+	saveInputs(
+		request.prompt,
+		request.targetSize,
+		request.maxTriangles,
+		request.textures,
+		request.includeBase,
+		request.anchored,
+		request.schemaName,
+		request.colliderMode,
+		request.seed,
+		request.variationCount
+	)
+
+	if not skipInputRefresh then
+		loadRequestIntoInputs(request)
+	end
+
+	local variationRequests = buildVariationRequests(request)
+	local generatedModels = {}
+	local cacheHits = 0
+	local lastResult
+	local outputTarget = parentTarget
+	local batchFolder
+
+	if #variationRequests > 1 then
+		batchFolder = Instance.new("Folder")
+		batchFolder.Name = getPromptName(request.prompt) .. "_Variations"
+		batchFolder.Parent = parentTarget
+		outputTarget = batchFolder
+	end
+
+	setBusyState(true)
+	beginGenerationActivity(
+		"Generate",
+		#variationRequests,
+		#variationRequests > 1 and ("Preparing %d variations"):format(#variationRequests) or "Preparing generation request",
+		"Progress is estimated from completed variations and cache hits."
+	)
+	setStatus(
+		#variationRequests > 1
+			and ("Submitting %d variation requests to Roblox Cube 3D..."):format(#variationRequests)
+			or "Submitting request to Roblox Cube 3D...",
+		"info"
+	)
+	ChangeHistoryService:SetWaypoint("Before Detailed Model Generate")
+
+	for index, variationRequest in ipairs(variationRequests) do
+		ui.generateButton.Text = #variationRequests > 1
+			and ("Generating %d/%d..."):format(index, #variationRequests)
+			or "Generating..."
+		updateGenerationActivity(
+			index,
+			index - 1,
+			#variationRequests > 1 and ("Generating variant %d (%s)"):format(index, variationRequest.seed ~= "" and variationRequest.seed or "random") or "Generating model",
+			"Waiting for Roblox Cube 3D to return the next asset.",
+			cacheHits
+		)
+
+		local success, result = generateSingleDetailedModel(variationRequest, outputTarget)
+		if not success then
+			if batchFolder and #generatedModels == 0 then
+				batchFolder:Destroy()
+			end
+			endGenerationActivity()
+			setBusyState(false)
+			setStatus(
+				index > 1
+					and ("Generation stopped on variation %d/%d after %d success(es): %s"):format(index, #variationRequests, #generatedModels, result)
+					or ("Generation failed: %s"):format(result),
+				"error"
+			)
+			return
+		end
+
+		generatedModels[#generatedModels + 1] = result.model
+		lastResult = {
+			request = variationRequest,
+			result = result,
+		}
+		if result.usedCache then
+			cacheHits += 1
+		end
+		updateGenerationActivity(index, index, #variationRequests > 1 and ("Finished variant %d"):format(index) or "Generated model", result.usedCache and "Loaded from cache." or "Fresh model generated.", cacheHits)
+	end
+
+	if batchFolder then
+		layoutGeneratedBatch(batchFolder)
+	end
+
+	if replaceTarget and #variationRequests == 1 and lastResult and lastResult.result and lastResult.result.model then
+		pcall(function()
+			replaceTarget:Destroy()
+		end)
+	end
+
+	pushPromptHistory(request.prompt)
+	refreshPromptHistoryButtons()
+	refreshPromptLibraryButtons()
+	Selection:Set(generatedModels)
+	ChangeHistoryService:SetWaypoint("After Detailed Model Generate")
+
+	if autoOpenPreviewEnabled and lastResult then
+		local previewClone = lastResult.result.model:Clone()
+		loadModelIntoPreview(
+			previewClone,
+			lastResult.request.colliderMode,
+			#variationRequests > 1
+				and ("Generated %d variations and opened the last result in the preview window."):format(#variationRequests)
+				or (lastResult.result.usedCache and "Generated model and opened a cached preview clone." or "Generated model and opened it in the preview window."),
+			lastResult.request
+		)
+	end
+
+	endGenerationActivity()
+	setBusyState(false)
+	if #variationRequests > 1 then
+		setStatus(
+			("Generated %d variations for \"%s\". Parent: %s. Cache hits: %d."):format(
+				#generatedModels,
+				getPromptName(request.prompt),
+				outputTarget:GetFullName(),
+				cacheHits
+			),
+			"success"
+		)
+		return
+	end
+
+	if lastResult then
+		local metadataNote = lastResult.result.metadataOrError and (" Metadata: " .. tostring(lastResult.result.metadataOrError)) or ""
+		local cacheNote = lastResult.result.usedCache and " Loaded from cache." or ""
+		setStatus(
+			("Generated %s with %d part(s). Parent: %s.%s"):format(
+				lastResult.result.model.Name,
+				lastResult.result.partCount,
+				outputTarget:GetFullName(),
+				metadataNote .. cacheNote
+			),
+			"success"
+		)
+	end
 end
 
 function generateDetailedModel()
@@ -5640,101 +11586,7 @@ function generateDetailedModel()
 		return
 	end
 
-	saveInputs(
-		request.prompt,
-		request.targetSize,
-		request.maxTriangles,
-		request.textures,
-		request.includeBase,
-		request.anchored,
-		request.schemaName,
-		request.colliderMode,
-		request.seed
-	)
-
-	local parentTarget = getInsertionParent()
-	setBusyState(true)
-	setStatus("Submitting request to Roblox Cube 3D...", "info")
-	ChangeHistoryService:SetWaypoint("Before Detailed Model Generate")
-
-	local generatedModel = loadCachedVisualModel(request)
-	local success = true
-	local metadataOrError
-	local usedCache = generatedModel ~= nil
-
-	if not generatedModel then
-		success, generatedModel, metadataOrError = pcall(function()
-			return GenerationService:GenerateModelAsync(request.inputs, request.schema)
-		end)
-	end
-
-	if not success then
-		setBusyState(false)
-		setStatus("Generation failed: " .. tostring(generatedModel), "error")
-		return
-	end
-
-	if typeof(generatedModel) ~= "Instance" then
-		setBusyState(false)
-		setStatus("Generation returned no model instance. Response: " .. tostring(generatedModel), "error")
-		return
-	end
-
-	generatedModel.Name = getPromptName(request.prompt)
-	generatedModel.Parent = parentTarget
-	generatedModel:SetAttribute("DetailedModelPrompt", request.prompt)
-	generatedModel:SetAttribute("DetailedModelTargetSize", request.targetSize)
-	generatedModel:SetAttribute("DetailedModelMaxTriangles", request.maxTriangles)
-	generatedModel:SetAttribute("DetailedModelGenerateTextures", request.textures)
-	generatedModel:SetAttribute("DetailedModelIncludeBase", request.includeBase)
-	generatedModel:SetAttribute("DetailedModelAnchored", request.anchored)
-	generatedModel:SetAttribute("DetailedModelSchema", request.schemaName)
-	generatedModel:SetAttribute("DetailedModelSeed", request.seed)
-	generatedModel:SetAttribute("DetailedModelColliderMode", request.colliderMode)
-	generatedModel:SetAttribute("DetailedModelScale", getInstanceScale(generatedModel))
-	applyAnchoredState(generatedModel, request.anchored)
-	clearGeneratedTextureReferences(generatedModel)
-	storeCachedVisualModel(request, generatedModel)
-	captureCollisionData(generatedModel, request.colliderMode)
-	attachGeneratedCollisionModel(parentTarget, generatedModel, request)
-	pushPromptHistory(request.prompt)
-	refreshPromptHistoryButtons()
-
-	if generatedModel:IsA("Model") then
-		pcall(function()
-			if request.groundSnap then
-				applyGroundSnapAtOrigin(generatedModel)
-			else
-				generatedModel:PivotTo(CFrame.new())
-			end
-		end)
-	elseif request.groundSnap and generatedModel:IsA("BasePart") then
-		pcall(function()
-			applyGroundSnapAtOrigin(generatedModel)
-		end)
-	end
-
-	Selection:Set({generatedModel})
-	ChangeHistoryService:SetWaypoint("After Detailed Model Generate")
-
-	if autoOpenPreviewEnabled then
-		local previewClone = generatedModel:Clone()
-	loadModelIntoPreview(previewClone, request.colliderMode, usedCache and "Generated model and opened a cached preview clone." or "Generated model and opened it in the preview window.", request)
-	end
-
-	local partCount = countParts(generatedModel)
-	local metadataNote = metadataOrError and (" Metadata: " .. tostring(metadataOrError)) or ""
-	local cacheNote = usedCache and " Loaded from cache." or ""
-	setBusyState(false)
-	setStatus(
-		("Generated %s with %d part(s). Parent: %s.%s"):format(
-			generatedModel.Name,
-			partCount,
-			parentTarget:GetFullName(),
-			metadataNote .. cacheNote
-		),
-		"success"
-	)
+	executeDetailedGeneration(request, getInsertionParent(), true)
 end
 
 function fixSelectedForPlay()
@@ -5905,24 +11757,41 @@ function updateResponsiveLayouts()
 		applyAdaptiveGrid(ui.buttonFrame, ui.buttonLayout, 3, 94, 38, 8, 8, 12)
 		applyAdaptiveGrid(collisionTuningFrame, collisionTuningLayout, 2, 138, 40, 8, 8, 24)
 
-		if mainWidth < 330 then
-			ui.seedFrame.Size = UDim2.new(1, 0, 0, 88)
-			ui.seedBox.Size = UDim2.new(1, 0, 0, 40)
-			ui.seedBox.Position = UDim2.new(0, 0, 0, 0)
-			ui.randomSeedButton.Size = UDim2.new(1, 0, 0, 40)
-			ui.randomSeedButton.Position = UDim2.new(0, 0, 0, 48)
+		if mainWidth < 420 then
+			if experimentalScenePromptEnabled then
+				ui.seedFrame.Size = UDim2.new(1, 0, 0, 40)
+				ui.variationCountBox.Size = UDim2.new(1, 0, 0, 40)
+				ui.variationCountBox.Position = UDim2.new(0, 0, 0, 0)
+			else
+				ui.seedFrame.Size = UDim2.new(1, 0, 0, 136)
+				ui.seedBox.Size = UDim2.new(1, 0, 0, 40)
+				ui.seedBox.Position = UDim2.new(0, 0, 0, 0)
+				ui.variationCountBox.Size = UDim2.new(1, 0, 0, 40)
+				ui.variationCountBox.Position = UDim2.new(0, 0, 0, 48)
+				ui.randomSeedButton.Size = UDim2.new(1, 0, 0, 40)
+				ui.randomSeedButton.Position = UDim2.new(0, 0, 0, 96)
+			end
 		else
 			ui.seedFrame.Size = UDim2.new(1, 0, 0, 40)
-			ui.seedBox.Size = UDim2.new(0.68, -4, 1, 0)
-			ui.seedBox.Position = UDim2.new(0, 0, 0, 0)
-			ui.randomSeedButton.Size = UDim2.new(0.32, -4, 1, 0)
-			ui.randomSeedButton.Position = UDim2.new(0.68, 8, 0, 0)
+			if experimentalScenePromptEnabled then
+				ui.variationCountBox.Size = UDim2.new(1, 0, 1, 0)
+				ui.variationCountBox.Position = UDim2.new(0, 0, 0, 0)
+			else
+				ui.seedBox.Size = UDim2.new(0.5, -8, 1, 0)
+				ui.seedBox.Position = UDim2.new(0, 0, 0, 0)
+				ui.variationCountBox.Size = UDim2.new(0.18, -8, 1, 0)
+				ui.variationCountBox.Position = UDim2.new(0.5, 8, 0, 0)
+				ui.randomSeedButton.Size = UDim2.new(0.32, -16, 1, 0)
+				ui.randomSeedButton.Position = UDim2.new(0.68, 16, 0, 0)
+			end
 		end
 	end
 
 	local previewWidth = previewWidget.AbsoluteSize.X
 	if previewWidth > 0 then
 		applyAdaptiveGrid(previewControls, previewControlsLayout, 2, 240, 42, 8, 8, 24)
+		applyAdaptiveGrid(ui.previewCompareGrid, ui.previewCompareLayout, 2, 180, 148, 8, 8, 0)
+		applyAdaptiveGrid(ui.previewSelectedFrame, ui.previewSelectedLayout, 2, 220, 180, 8, 8, 0)
 	end
 end
 
@@ -5983,37 +11852,179 @@ function updateThemeSelector()
 	end
 end
 
+function getProceduralToggleLabel(enabled, offText, onText)
+	return enabled and onText or offText
+end
+
+function getProceduralUiAudioLabel()
+	return getProceduralToggleLabel(
+		uiAudioEnabled,
+		"UI Audio Muted",
+		uiAudioVolumeLevel >= 0.72 and "UI Audio Energized" or "UI Audio Enabled"
+	)
+end
+
+function getProceduralThemeAudioLabel()
+	return getProceduralToggleLabel(
+		themeChangeAudioEnabled,
+		"Theme Audio Muted",
+		themeChangeAudioVolumeLevel >= 0.72 and "Theme Audio Cinematic" or "Theme Audio Enabled"
+	)
+end
+
+function getProceduralVariationCompletionAudioLabel()
+	return getProceduralToggleLabel(
+		variationCompletionAudioEnabled,
+		"Completion Audio Muted",
+		"Completion Audio Signifiers Enabled"
+	)
+end
+
+function getProceduralScenePromptLabel()
+	return getProceduralToggleLabel(
+		experimentalScenePromptEnabled,
+		"Scene Direction Prompt Hidden",
+		"Scene Direction Prompt Available"
+	)
+end
+
+function sceneModeLocksPromptModifiers()
+	return experimentalScenePromptEnabled
+end
+
+function syncExperimentalScenePromptUi()
+	local sceneModeActive = experimentalScenePromptEnabled
+	if ui.promptTitle then
+		ui.promptTitle.Visible = not sceneModeActive
+	end
+	if ui.promptBox then
+		ui.promptBox.Visible = not sceneModeActive
+	end
+	if ui.scenePromptTitle then
+		ui.scenePromptTitle.Visible = sceneModeActive
+	end
+	if ui.scenePromptBox then
+		ui.scenePromptBox.Visible = sceneModeActive
+	end
+	if ui.scenePromptHelp then
+		ui.scenePromptHelp.Visible = sceneModeActive
+	end
+	if ui.seedTitle then
+		ui.seedTitle.Text = sceneModeActive and "Scene Variations" or "Variation Seed"
+	end
+	if ui.seedBox then
+		ui.seedBox.Visible = not sceneModeActive
+	end
+	if ui.randomSeedButton then
+		ui.randomSeedButton.Visible = not sceneModeActive
+	end
+	if ui.seedHelp then
+		ui.seedHelp.Visible = not sceneModeActive
+	end
+	if ui.variationCountBox then
+		ui.variationCountBox.PlaceholderText = sceneModeActive and "Scene Variations" or "Variations"
+	end
+end
+
 function updateSettingsButton()
 	if not ui.cacheToggleButton then
 		return
 	end
-	ui.cacheToggleButton.Text = cacheEnabled and "Cache: On" or "Cache: Off"
+	ui.cacheToggleButton.Text = getProceduralToggleLabel(cacheEnabled, "Cache Rebuild Mode", "Cache Reuse Enabled")
 	setButtonThemeRole(ui.cacheToggleButton, cacheEnabled and "active" or "muted")
 	if ui.autoOpenPreviewButton then
-		ui.autoOpenPreviewButton.Text = autoOpenPreviewEnabled and "Auto-open Preview: On" or "Auto-open Preview: Off"
+		ui.autoOpenPreviewButton.Text = getProceduralToggleLabel(autoOpenPreviewEnabled, "Preview Opens Manually", "Preview Auto-Opens After Generate")
 		setButtonThemeRole(ui.autoOpenPreviewButton, autoOpenPreviewEnabled and "active" or "muted")
 	end
+	if ui.uiAudioToggleButton then
+		ui.uiAudioToggleButton.Text = getProceduralUiAudioLabel()
+		setButtonThemeRole(ui.uiAudioToggleButton, uiAudioEnabled and "info" or "muted")
+	end
+	if ui.uiAudioSlider then
+		ui.uiAudioSlider:setValue(uiAudioVolumeLevel)
+		ui.uiAudioSlider.frame.BackgroundTransparency = uiAudioEnabled and 0 or 0.18
+	end
+	if ui.themeChangeAudioToggleButton then
+		ui.themeChangeAudioToggleButton.Text = getProceduralThemeAudioLabel()
+		setButtonThemeRole(ui.themeChangeAudioToggleButton, themeChangeAudioEnabled and "teal" or "muted")
+	end
+	if ui.themeChangeAudioSlider then
+		ui.themeChangeAudioSlider:setValue(themeChangeAudioVolumeLevel)
+		ui.themeChangeAudioSlider.frame.BackgroundTransparency = themeChangeAudioEnabled and 0 or 0.18
+	end
+	if ui.variationCompletionAudioToggleButton then
+		ui.variationCompletionAudioToggleButton.Text = getProceduralVariationCompletionAudioLabel()
+		setButtonThemeRole(ui.variationCompletionAudioToggleButton, variationCompletionAudioEnabled and "active" or "muted")
+	end
 	if ui.showAdvancedCollisionButton then
-		ui.showAdvancedCollisionButton.Text = showAdvancedCollisionTuning and "Advanced Collision Tuning: On" or "Advanced Collision Tuning: Off"
+		ui.showAdvancedCollisionButton.Text = getProceduralToggleLabel(
+			showAdvancedCollisionTuning,
+			"Advanced Collision Tuning Hidden",
+			"Advanced Collision Tuning Visible"
+		)
 		setButtonThemeRole(ui.showAdvancedCollisionButton, showAdvancedCollisionTuning and "active" or "muted")
 	end
 	if ui.confirmStoreAllButton then
-		ui.confirmStoreAllButton.Text = confirmStoreAllEnabled and "Confirm Store All: On" or "Confirm Store All: Off"
+		ui.confirmStoreAllButton.Text = getProceduralToggleLabel(
+			confirmStoreAllEnabled,
+			"Store All Runs Without Confirmation",
+			"Store All Requires Confirmation"
+		)
 		setButtonThemeRole(ui.confirmStoreAllButton, confirmStoreAllEnabled and "active" or "muted")
 	end
 	if ui.experimentalStyleBiasButton then
 		experimentalStyleBias = normalizeExperimentalStyleBias(experimentalStyleBias)
-		ui.experimentalStyleBiasButton.Text = "Style Bias: " .. experimentalStyleBias
-		setButtonThemeRole(ui.experimentalStyleBiasButton, experimentalStyleBias ~= "Off" and "active" or "secondary")
+		if sceneModeLocksPromptModifiers() then
+			ui.experimentalStyleBiasButton.Text = "Style Bias Locked By Scene Mode"
+			setButtonThemeRole(ui.experimentalStyleBiasButton, "muted")
+			ui.experimentalStyleBiasButton.Active = false
+			ui.experimentalStyleBiasButton.AutoButtonColor = false
+		else
+			ui.experimentalStyleBiasButton.Text = experimentalStyleBias == "Off"
+				and "Style Bias Neutral"
+				or ("Style Bias Favors " .. experimentalStyleBias)
+			setButtonThemeRole(ui.experimentalStyleBiasButton, experimentalStyleBias ~= "Off" and "active" or "secondary")
+			ui.experimentalStyleBiasButton.Active = true
+			ui.experimentalStyleBiasButton.AutoButtonColor = true
+		end
 	end
 	if ui.experimentalPreviewModeButton then
 		experimentalPreviewMode = normalizeExperimentalPreviewMode(experimentalPreviewMode)
-		ui.experimentalPreviewModeButton.Text = "Preview Mode: " .. experimentalPreviewMode
+		if experimentalPreviewMode == "Fast" then
+			ui.experimentalPreviewModeButton.Text = "Preview Mode Prioritizes Speed"
+		elseif experimentalPreviewMode == "High Quality" then
+			ui.experimentalPreviewModeButton.Text = "Preview Mode Prioritizes Fidelity"
+		else
+			ui.experimentalPreviewModeButton.Text = "Preview Mode Balanced"
+		end
 		setButtonThemeRole(ui.experimentalPreviewModeButton, experimentalPreviewMode == "Fast" and "warning" or (experimentalPreviewMode == "High Quality" and "active" or "info"))
 	end
 	if ui.experimentalGroundSnapButton then
-		ui.experimentalGroundSnapButton.Text = experimentalGroundSnap and "Ground Snap at Origin: On" or "Ground Snap at Origin: Off"
+		ui.experimentalGroundSnapButton.Text = getProceduralToggleLabel(
+			experimentalGroundSnap,
+			"Ground Snap Disabled",
+			"Ground Snap Anchors To Origin"
+		)
 		setButtonThemeRole(ui.experimentalGroundSnapButton, experimentalGroundSnap and "active" or "teal")
+	end
+	if ui.experimentalScenePromptButton then
+		ui.experimentalScenePromptButton.Text = getProceduralScenePromptLabel()
+		setButtonThemeRole(ui.experimentalScenePromptButton, experimentalScenePromptEnabled and "active" or "warning")
+	end
+	refreshPluginUpdateUi()
+	if ui.experimentalNegativePromptBox then
+		local locked = sceneModeLocksPromptModifiers()
+		ui.experimentalNegativePromptBox.TextEditable = not locked
+		ui.experimentalNegativePromptBox.Active = not locked
+		ui.experimentalNegativePromptBox.BackgroundTransparency = locked and 0.18 or 0
+		ui.experimentalNegativePromptBox.TextTransparency = locked and 0.2 or 0
+		ui.experimentalNegativePromptBox.PlaceholderText = locked
+			and "Negative Prompt disabled while scene mode is enabled"
+			or "Example: wheels, weapons, broken parts"
+	end
+	syncExperimentalScenePromptUi()
+	if ui.settingsProceduralFrame and settingsWidget and settingsWidget.Enabled then
+		rebuildProceduralSettingsOverview()
 	end
 end
 
@@ -6035,12 +12046,39 @@ function refreshPromptHistoryButtons()
 		end
 	end
 	ui.historyLogBox.Text = #lines > 0 and table.concat(lines, "\n") or "No recent prompts yet."
+	refreshPromptLibraryButtons()
 	refreshSettingsSearch()
 end
 
 function setAutoOpenPreviewEnabled(enabled)
 	autoOpenPreviewEnabled = enabled and true or false
 	setSetting(SETTINGS.autoOpenPreview, autoOpenPreviewEnabled)
+	updateSettingsButton()
+end
+
+function setUiAudioEnabled(enabled)
+	uiAudioEnabled = enabled == true
+	setSetting(SETTINGS.uiAudioEnabled, uiAudioEnabled)
+	if uiAudioEnabled and uiAudioVolumeLevel <= 0 then
+		uiAudioVolumeLevel = 0.72
+		setSetting(SETTINGS.uiAudioVolume, uiAudioVolumeLevel)
+	end
+	updateSettingsButton()
+end
+
+function setThemeChangeAudioEnabled(enabled)
+	themeChangeAudioEnabled = enabled == true
+	setSetting(SETTINGS.themeChangeAudioEnabled, themeChangeAudioEnabled)
+	if themeChangeAudioEnabled and themeChangeAudioVolumeLevel <= 0 then
+		themeChangeAudioVolumeLevel = 0.72
+		setSetting(SETTINGS.themeChangeAudioVolume, themeChangeAudioVolumeLevel)
+	end
+	updateSettingsButton()
+end
+
+function setVariationCompletionAudioEnabled(enabled)
+	variationCompletionAudioEnabled = enabled == true
+	setSetting(SETTINGS.variationCompletionAudioEnabled, variationCompletionAudioEnabled)
 	updateSettingsButton()
 end
 
@@ -6093,6 +12131,14 @@ function setExperimentalGroundSnap(enabled)
 	updateSettingsButton()
 end
 
+function setExperimentalScenePromptEnabled(enabled)
+	experimentalScenePromptEnabled = enabled and true or false
+	setSetting(SETTINGS.experimentalScenePromptEnabled, experimentalScenePromptEnabled)
+	updateSettingsButton()
+	updateResponsiveLayouts()
+	renderRequestPreview(buildRequest())
+end
+
 function refreshThemeOptions()
 	local query = string.lower(string.gsub(themeUi.searchBox.Text or "", "^%s+", ""))
 	query = string.gsub(query, "%s+$", "")
@@ -6142,6 +12188,7 @@ function setSettingsPanelOpen(isOpen)
 	settingsWidget.Enabled = isOpen
 	guideWidget.Enabled = false
 	if isOpen then
+		rebuildProceduralSettingsOverview()
 		refreshSettingsSearch()
 	end
 end
@@ -6150,6 +12197,9 @@ function setGuidePanelOpen(isOpen)
 	themeUi.optionsFrame.Visible = false
 	settingsWidget.Enabled = false
 	guideWidget.Enabled = isOpen
+	if isOpen then
+		rebuildGuidebook()
+	end
 end
 
 OPEN_BUTTON.Click:Connect(function()
@@ -6165,9 +12215,10 @@ widget:GetPropertyChangedSignal("AbsoluteSize"):Connect(updateResponsiveLayouts)
 previewWidget:GetPropertyChangedSignal("Enabled"):Connect(function()
 	if not previewWidget.Enabled then
 		setPreviewAutoRotate(false)
-		previewDragging = false
-		previewDragLastPosition = nil
-		previewDragInput = nil
+		previewState.dragging = false
+		previewState.dragLastPosition = nil
+		previewState.dragInput = nil
+		clearPreviewSessions()
 	end
 end)
 
@@ -6190,6 +12241,10 @@ syncGenerationBooleanButtons()
 ui.previewButton.MouseButton1Click:Connect(function()
 	generateVisualPreview()
 end)
+ui.previewGenerateCurrentButton.MouseButton1Click:Connect(generateActivePreviewVariant)
+ui.previewGenerateSelectedButton.MouseButton1Click:Connect(generateSelectedPreviewVariants)
+ui.previewGenerateAllButton.MouseButton1Click:Connect(generateAllPreviewVariants)
+ui.previewSelectAllTabsButton.MouseButton1Click:Connect(toggleSelectAllPreviewTabs)
 
 ui.texturesToggleButton.MouseButton1Click:Connect(function()
 	generationTexturesEnabled = not generationTexturesEnabled
@@ -6238,8 +12293,31 @@ ui.clearCacheButton.MouseButton1Click:Connect(function()
 	setStatus(("Cleared %d cached model(s)."):format(removed), "success")
 end)
 
+ui.checkUpdatesButton.MouseButton1Click:Connect(function()
+	checkLatestPluginRelease()
+end)
+
+ui.updateReleaseButton.MouseButton1Click:Connect(function()
+	setStatus(
+		"Automatic self-update is not available from inside Studio. Use the Release URL field in Settings to download the latest GitHub release and replace the local plugin file manually.",
+		"info"
+	)
+end)
+
 ui.autoOpenPreviewButton.MouseButton1Click:Connect(function()
 	setAutoOpenPreviewEnabled(not autoOpenPreviewEnabled)
+end)
+
+ui.uiAudioToggleButton.MouseButton1Click:Connect(function()
+	setUiAudioEnabled(not uiAudioEnabled)
+end)
+
+ui.themeChangeAudioToggleButton.MouseButton1Click:Connect(function()
+	setThemeChangeAudioEnabled(not themeChangeAudioEnabled)
+end)
+
+ui.variationCompletionAudioToggleButton.MouseButton1Click:Connect(function()
+	setVariationCompletionAudioEnabled(not variationCompletionAudioEnabled)
 end)
 
 ui.showAdvancedCollisionButton.MouseButton1Click:Connect(function()
@@ -6281,7 +12359,17 @@ ui.experimentalNegativePromptBox.FocusLost:Connect(function()
 	setSetting(SETTINGS.experimentalNegativePrompt, cleaned)
 end)
 
+ui.scenePromptBox.FocusLost:Connect(function()
+	local cleaned = tostring(ui.scenePromptBox.Text or ""):gsub("^%s+", ""):gsub("%s+$", "")
+	ui.scenePromptBox.Text = cleaned
+	setSetting(SETTINGS.experimentalScenePrompt, cleaned)
+	renderRequestPreview(buildRequest())
+end)
+
 ui.experimentalStyleBiasButton.MouseButton1Click:Connect(function()
+	if sceneModeLocksPromptModifiers() then
+		return
+	end
 	cycleExperimentalStyleBias()
 end)
 
@@ -6293,10 +12381,23 @@ ui.experimentalGroundSnapButton.MouseButton1Click:Connect(function()
 	setExperimentalGroundSnap(not experimentalGroundSnap)
 end)
 
+ui.experimentalScenePromptButton.MouseButton1Click:Connect(function()
+	setExperimentalScenePromptEnabled(not experimentalScenePromptEnabled)
+end)
+
 themeUi.searchBox:GetPropertyChangedSignal("Text"):Connect(function()
 	if themeUi.optionsFrame.Visible then
 		refreshThemeOptions()
 	end
+end)
+
+ui.promptBox:GetPropertyChangedSignal("Text"):Connect(function()
+	refreshPromptLibraryButtons()
+	renderRequestPreview(buildRequest())
+end)
+
+ui.scenePromptBox:GetPropertyChangedSignal("Text"):Connect(function()
+	renderRequestPreview(buildRequest())
 end)
 
 ui.settingsSearchBox:GetPropertyChangedSignal("Text"):Connect(function()
@@ -6341,9 +12442,10 @@ ui.generateButton.MouseButton1Click:Connect(generateDetailedModel)
 ui.runtimeButton.MouseButton1Click:Connect(fixSelectedForPlay)
 ui.runtimeAllButton.MouseButton1Click:Connect(fixAllForPlay)
 ui.toggleStorageButton.MouseButton1Click:Connect(toggleStoredModels)
+ui.regenerateSelectedButton.MouseButton1Click:Connect(regenerateSelectedModel)
 ui.closePreviewButton.MouseButton1Click:Connect(function()
 	previewWidget.Enabled = false
-	clearPreviewModel()
+	clearPreviewSessions()
 end)
 ui.rotateLeftButton.MouseButton1Click:Connect(function()
 	nudgePreviewCamera(math.rad(-12), 0)
@@ -6358,13 +12460,13 @@ ui.rotateDownButton.MouseButton1Click:Connect(function()
 	nudgePreviewCamera(0, math.rad(-8))
 end)
 ui.zoomInButton.MouseButton1Click:Connect(function()
-	zoomPreview(-math.max(previewOrbitRadius * 0.18, 1.5))
+	zoomPreview(-math.max(previewState.orbitRadius * 0.18, 1.5))
 end)
 ui.zoomOutButton.MouseButton1Click:Connect(function()
-	zoomPreview(math.max(previewOrbitRadius * 0.18, 1.5))
+	zoomPreview(math.max(previewState.orbitRadius * 0.18, 1.5))
 end)
 ui.autoRotateButton.MouseButton1Click:Connect(function()
-	setPreviewAutoRotate(not previewAutoRotateEnabled)
+	setPreviewAutoRotate(not previewState.autoRotateEnabled)
 end)
 ui.resetViewButton.MouseButton1Click:Connect(function()
 	resetPreviewCamera()
@@ -6391,22 +12493,22 @@ ui.previewRotateSpeedButton.MouseButton1Click:Connect(function()
 	cyclePreviewRotateSpeed()
 end)
 ui.previewOriginMarkerButton.MouseButton1Click:Connect(function()
-	previewShowOriginMarker = not previewShowOriginMarker
+	previewState.showOriginMarker = not previewState.showOriginMarker
 	syncPreviewOriginMarkerButton()
 	updatePreviewDecorations()
 end)
 ui.previewBoundsButton.MouseButton1Click:Connect(function()
-	previewShowBoundsOverlay = not previewShowBoundsOverlay
+	previewState.showBoundsOverlay = not previewState.showBoundsOverlay
 	syncPreviewBoundsButton()
 	updatePreviewDecorations()
 end)
 ui.previewCollisionOpacityButton.MouseButton1Click:Connect(function()
-	if previewCollisionOpacityMode == "Low" then
-		previewCollisionOpacityMode = "Medium"
-	elseif previewCollisionOpacityMode == "Medium" then
-		previewCollisionOpacityMode = "High"
+	if previewState.collisionOpacityMode == "Low" then
+		previewState.collisionOpacityMode = "Medium"
+	elseif previewState.collisionOpacityMode == "Medium" then
+		previewState.collisionOpacityMode = "High"
 	else
-		previewCollisionOpacityMode = "Low"
+		previewState.collisionOpacityMode = "Low"
 	end
 	syncPreviewCollisionOpacityButton()
 	if collisionPreviewEnabled then
@@ -6440,11 +12542,73 @@ ui.colliderModeBox.FocusLost:Connect(function()
 	renderRequestPreview(buildRequest())
 end)
 
+ui.variationCountBox.FocusLost:Connect(function()
+	local variationCount = parseNumber(ui.variationCountBox.Text, 1, 1, 12)
+	ui.variationCountBox.Text = tostring(variationCount)
+	setSetting(SETTINGS.variationCount, variationCount)
+	renderRequestPreview(buildRequest())
+end)
+
+ui.favoritePromptButton.MouseButton1Click:Connect(function()
+	if addFavoritePrompt(ui.promptBox.Text) then
+		refreshPromptLibraryButtons()
+		setStatus("Saved the current prompt to favorites.", "success")
+	else
+		setStatus("Write a prompt before saving it to favorites.", "error")
+	end
+end)
+
+ui.unfavoritePromptButton.MouseButton1Click:Connect(function()
+	if removeFavoritePrompt(ui.promptBox.Text) then
+		refreshPromptLibraryButtons()
+		setStatus("Removed the current prompt from favorites.", "success")
+	else
+		setStatus("The current prompt is not in favorites.", "error")
+	end
+end)
+
+for index, button in ipairs(ui.favoritePromptButtons or {}) do
+	button.MouseButton1Click:Connect(function()
+		local prompt = favoritePrompts[index]
+		if prompt then
+			ui.promptBox.Text = prompt
+			refreshPromptLibraryButtons()
+			renderRequestPreview(buildRequest())
+			setStatus(("Loaded favorite prompt %d into the editor."):format(index), "success")
+		end
+	end)
+end
+
+for index, button in ipairs(ui.recentPromptButtons or {}) do
+	button.MouseButton1Click:Connect(function()
+		local prompt = recentPromptHistory[index]
+		if prompt then
+			ui.promptBox.Text = prompt
+			refreshPromptLibraryButtons()
+			renderRequestPreview(buildRequest())
+			setStatus(("Loaded recent prompt %d into the editor."):format(index), "success")
+		end
+	end)
+end
+
+ui.namePatternButton.MouseButton1Click:Connect(function()
+	cycleNamePattern()
+	refreshPromptLibraryButtons()
+	setStatus("Updated generated model naming pattern.", "success")
+end)
+
+ui.batchLayoutButton.MouseButton1Click:Connect(function()
+	cycleBatchLayout()
+	refreshPromptLibraryButtons()
+	setStatus("Updated batch layout behavior for future variation runs.", "success")
+end)
+
 applyTheme(themeState.name)
 updateThemeSelector()
 updateSettingsButton()
 updateToggleStorageButton()
 refreshPromptHistoryButtons()
+refreshPromptLibraryButtons()
 refreshThemeOptions()
 setThemeMenuOpen(false)
 setSettingsPanelOpen(false)
